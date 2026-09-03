@@ -1,0 +1,155 @@
+import type Anthropic from "@anthropic-ai/sdk";
+import type { JourneySpec } from "@midfunnel/core/journey/spec";
+import type { LeadState } from "@midfunnel/core/events/types";
+import { EvidenceExtractor, type ExtractedField } from "./extractor.js";
+import { cachedSystem, createClient, MAX_TOKENS, MODEL } from "./claude.js";
+import { evidenceComplete, qualifies, route, score, type Evidence } from "./scoring.js";
+
+export type Action =
+  | { kind: "send"; text: string; pinnedTemplate?: string }
+  | { kind: "extract"; evidence: Record<string, ExtractedField> }
+  | { kind: "score"; score: number }
+  | { kind: "route"; decision: string; target: string; sla?: string }
+  | { kind: "escalate"; reason: string }
+  | { kind: "complete"; qualified: boolean };
+
+const HUMAN_REQUEST = /\b(human|agent|person|representative|talk to someone|real person)\b/i;
+
+export class AgentRuntime {
+  private readonly extractor: EvidenceExtractor;
+  private readonly client: Anthropic;
+
+  constructor(extractor?: EvidenceExtractor, client?: Anthropic) {
+    this.client = client ?? createClient();
+    this.extractor = extractor ?? new EvidenceExtractor(this.client);
+  }
+
+  /**
+   * The whole contract. Pure with respect to the event log: it reads a folded
+   * LeadState and returns intended actions. The caller persists them, which is
+   * what lets replay, simulation and live traffic share one runtime.
+   */
+  async step(spec: JourneySpec, state: LeadState): Promise<Action[]> {
+    // 1. First contact — deterministic, pinned, and never a model call.
+    if (state.turns.length === 0) {
+      const disclosure = spec.pinned.disclosure ?? "";
+      return [{
+        kind: "send",
+        text: disclosure || "Hello.",
+        ...(spec.pinned.opening ? { pinnedTemplate: spec.pinned.opening } : {}),
+      }];
+    }
+
+    const actions: Action[] = [];
+
+    // 2. Explicit human request short-circuits everything.
+    const lastLead = [...state.turns].reverse().find((t) => t.role === "lead");
+    if (lastLead && HUMAN_REQUEST.test(lastLead.text)) {
+      return [{ kind: "escalate", reason: "asks_for_human" }];
+    }
+
+    // 3. Extract, then merge over what is already known.
+    const fresh = await this.extractor.extract(spec, state.turns);
+    if (Object.keys(fresh).length > 0) actions.push({ kind: "extract", evidence: fresh });
+    const evidence: Evidence = { ...state.evidence, ...fresh };
+
+    // 4. Declared escalation triggers on evidence.
+    const trigger = escalationTrigger(spec, evidence);
+    if (trigger) {
+      actions.push({ kind: "escalate", reason: trigger });
+      return actions;
+    }
+
+    // 5. Turn budget exhausted.
+    const leadTurns = state.turns.filter((t) => t.role === "lead").length;
+    if (state.turns.length >= spec.policy.max_turns || leadTurns >= spec.policy.max_turns) {
+      actions.push({ kind: "complete", qualified: false });
+      return actions;
+    }
+
+    // 6. Required evidence complete — score, route, finish.
+    if (evidenceComplete(spec, evidence)) {
+      const s = score(spec, evidence);
+      const r = route(spec, s);
+      actions.push({ kind: "score", score: s });
+      actions.push({ kind: "route", ...r });
+      actions.push({ kind: "complete", qualified: qualifies(spec, s, evidence) });
+      return actions;
+    }
+
+    // 7. Otherwise ask for the next missing field.
+    const target = nextField(spec, evidence);
+    actions.push({ kind: "send", text: await this.ask(spec, state, evidence, target) });
+    return actions;
+  }
+
+  private async ask(
+    spec: JourneySpec, state: LeadState, evidence: Evidence, field: string,
+  ): Promise<string> {
+    const def = spec.evidence[field]!;
+    const transcript = state.turns.map((t) =>
+      `${t.role === "agent" ? "AGENT" : "LEAD"}: ${t.text}`).join("\n");
+
+    const response = await this.client.messages.create({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      thinking: { type: "adaptive" },
+      system: cachedSystem([
+        `You are ${spec.agent.persona}, qualifying a ${spec.vertical} lead over chat.`,
+        `Goal: ${spec.objective.goal}.`,
+        "",
+        "You must NEVER:",
+        ...spec.policy.never.map((r) => `- ${r}`),
+        "",
+        "Write ONE short, natural message. No preamble, no sign-off, no emoji.",
+        "Under 30 words. Ask about exactly one thing.",
+      ].join("\n")),
+      output_config: { effort: "high" },
+      messages: [{
+        role: "user",
+        content: JSON.stringify({
+          transcript,
+          established: Object.fromEntries(
+            Object.entries(evidence).map(([k, v]) => [k, v.value]),
+          ),
+          ask_about: { field, type: def.type, description: def.description ?? null },
+        }, null, 2),
+      }],
+    });
+
+    for (const block of response.content) {
+      if (block.type === "text") return block.text.trim();
+    }
+    throw new Error("runtime received no text content from the model");
+  }
+}
+
+/**
+ * Ordering rule: required before optional, and a `sensitive` field is never
+ * asked while nothing at all is established — you do not open with money.
+ */
+function nextField(spec: JourneySpec, evidence: Evidence): string {
+  const missing = Object.entries(spec.evidence).filter(([f]) => {
+    const got = evidence[f];
+    return got === undefined || got.value === null || got.value === undefined;
+  });
+  const nothingEstablished = Object.keys(evidence).length === 0;
+
+  const eligible = missing.filter(([, d]) => !(d.sensitive && nothingEstablished));
+  const pool = eligible.length > 0 ? eligible : missing;
+
+  const required = pool.find(([, d]) => d.required);
+  return (required ?? pool[0]!)[0];
+}
+
+function escalationTrigger(spec: JourneySpec, evidence: Evidence): string | null {
+  for (const rule of spec.policy.escalate_when) {
+    const m = /^evidence\.(\w+)\s*==\s*(\S+)$/.exec(rule.trim());
+    // Rules we cannot yet evaluate (e.g. `sentiment < -0.5`) are skipped, not
+    // thrown on: an unimplementable policy rule must not break the runtime.
+    if (!m) continue;
+    const got = evidence[m[1]!];
+    if (got && String(got.value) === m[2]) return rule.trim();
+  }
+  return null;
+}
