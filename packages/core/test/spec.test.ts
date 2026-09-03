@@ -48,6 +48,26 @@ describe("parseSpec", () => {
     expect(() => parseSpec(bad)).toThrow(/payment\.charge_card.*privilege/i);
   });
 
+  it("rejects an `otherwise` rule that is not declared last", () => {
+    // An `otherwise` ahead of another rule shadows it entirely.
+    const bad = yaml.replace(
+      /routing:\n(.*\n)*?\ntools:/,
+      [
+        "routing:",
+        "  cold: { when: \"otherwise\",   target: \"nurture.mba_longtail_90d\" }",
+        "  hot:  { when: \"score >= 70\", target: \"handoff.counsellor\", sla: 5m }",
+        "",
+        "tools:",
+      ].join("\n"),
+    );
+    expect(() => parseSpec(bad)).toThrow(/not declared last|shadow/i);
+  });
+
+  it("rejects a spec with no catch-all routing rule", () => {
+    const bad = yaml.replace('  cold: { when: "otherwise",   target: "nurture.mba_longtail_90d" }\n', "");
+    expect(() => parseSpec(bad)).toThrow(/exactly one "otherwise"/i);
+  });
+
   it("lists required evidence fields only", () => {
     expect(requiredEvidenceFields(parseSpec(yaml)).sort())
       .toEqual(["budget_band", "target_program", "timeline"]);

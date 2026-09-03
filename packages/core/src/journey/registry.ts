@@ -32,14 +32,24 @@ export class JourneyRegistry {
     return spec;
   }
 
+  /**
+   * Reads back from `yaml_source`, NOT from the `spec` JSONB column.
+   *
+   * This is load-bearing: Postgres JSONB does not preserve object key order —
+   * it re-sorts keys by length then bytewise. Routing is evaluated in
+   * declaration order with first-match-wins, so a spec round-tripped through
+   * JSONB comes back with `otherwise` potentially ahead of `warm`, silently
+   * misrouting every mid-scoring lead. The JSONB column exists for querying;
+   * the YAML is the source of truth.
+   */
   async get(journey: string, version: number): Promise<JourneySpec> {
-    const { rows } = await this.pool.query(
-      `SELECT spec FROM journey_versions
+    const { rows } = await this.pool.query<{ yaml_source: string }>(
+      `SELECT yaml_source FROM journey_versions
        WHERE tenant_id = $1 AND journey = $2 AND version = $3`,
       [this.tenantId, journey, version],
     );
     if (rows.length === 0) throw new Error(`journey not found: ${journey} v${version}`);
-    return rows[0].spec as JourneySpec;
+    return parseSpec(rows[0]!.yaml_source);
   }
 
   async list(journey: string): Promise<number[]> {

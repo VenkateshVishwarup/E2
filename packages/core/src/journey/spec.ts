@@ -87,6 +87,23 @@ export function parseSpec(yamlText: string): JourneySpec {
     }
   }
 
+  // Routing is evaluated in declaration order and the first match wins, so an
+  // `otherwise` rule anywhere but last would shadow everything after it.
+  // Enforce that here rather than leaving it to authoring discipline.
+  const rules = Object.entries(parsed.routing);
+  const catchAll = rules.filter(([, r]) => r.when.trim().toLowerCase() === "otherwise");
+  if (catchAll.length !== 1) {
+    throw new Error(
+      `routing needs exactly one "otherwise" rule, found ${catchAll.length}`,
+    );
+  }
+  if (rules[rules.length - 1]![0] !== catchAll[0]![0]) {
+    throw new Error(
+      `routing rule "${catchAll[0]![0]}" is "otherwise" but is not declared last; ` +
+      `it would shadow every rule after it`,
+    );
+  }
+
   return { ...parsed, agent: { ...parsed.agent, dataScope: parsed.agent.data_scope } };
 }
 

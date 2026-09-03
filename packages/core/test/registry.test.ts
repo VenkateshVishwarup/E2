@@ -55,6 +55,16 @@ describe("JourneyRegistry", () => {
       .toMatchObject({ kind: "changed", before: 3, after: 4 });
   });
 
+  it("preserves routing declaration order across a database round-trip", async () => {
+    // Regression: JSONB re-sorts object keys by length then bytewise, which
+    // reorders routing to {hot, cold, warm}. Since routing is first-match-wins
+    // and `cold` is `otherwise`, every warm lead would silently route cold.
+    await reg.publish(V4);
+    const s = await reg.get("mba-admissions-qualification", 4);
+    expect(Object.keys(s.routing)).toEqual(["hot", "warm", "cold"]);
+    expect(Object.keys(s.evidence)[0]).toBe("target_program");
+  });
+
   it("never reads another tenant's journeys", async () => {
     await reg.publish(V4);
     const other = new JourneyRegistry(pool, "t2");
