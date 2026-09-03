@@ -1,7 +1,8 @@
 import type { Pool } from "../db/client.js";
 import {
   EVENT_TYPES, eventInputSchema,
-  type EventInput, type LeadState, type OutcomePayload, type StoredEvent, type Turn,
+  type EventInput, type EventType, type LeadState, type OutcomePayload,
+  type StoredEvent, type Turn,
 } from "./types.js";
 
 const COLS = `id, tenant_id, lead_id, journey, journey_version,
@@ -46,7 +47,7 @@ export class EventStore {
       return `($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6},$${o + 7},$${o + 8})`;
     });
 
-    const { rows } = await this.pool.query(
+    const { rows } = await this.pool.query<EventRow>(
       `INSERT INTO events (tenant_id, lead_id, journey, journey_version,
                            agent_id, type, payload, occurred_at)
        VALUES ${tuples.join(",")} RETURNING ${COLS}`,
@@ -67,7 +68,7 @@ export class EventStore {
     if (filter.type) add("type =", filter.type);
 
     const limit = filter.limit ? ` LIMIT ${Number(filter.limit)}` : "";
-    const { rows } = await this.pool.query(
+    const { rows } = await this.pool.query<EventRow>(
       `SELECT ${COLS} FROM events WHERE ${where.join(" AND ")}
        ORDER BY occurred_at ASC, id ASC${limit}`,
       values,
@@ -86,7 +87,7 @@ export class EventStore {
     };
 
     for (const e of events) {
-      const p = e.payload as Record<string, never>;
+      const p = e.payload;
       switch (e.type) {
         case "MessageSent":
           state.turns.push({ role: "agent", text: String(p.renderedText ?? ""), at: e.occurredAt } satisfies Turn);
@@ -108,7 +109,21 @@ export class EventStore {
   }
 }
 
-function toStored(r: Record<string, never>): StoredEvent {
+/** Shape of a row as it comes back from Postgres (snake_case, loose types). */
+interface EventRow {
+  id: string | number;
+  tenant_id: string;
+  lead_id: string;
+  journey: string;
+  journey_version: string | number;
+  agent_id: string;
+  type: EventType;
+  payload: Record<string, unknown>;
+  occurred_at: Date;
+  recorded_at: Date;
+}
+
+function toStored(r: EventRow): StoredEvent {
   return {
     id: Number(r.id), tenantId: r.tenant_id, leadId: r.lead_id,
     journey: r.journey, journeyVersion: Number(r.journey_version),
