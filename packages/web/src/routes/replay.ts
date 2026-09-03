@@ -28,7 +28,7 @@ export function registerRoutes(app: FastifyInstance, deps: ServerDeps): void {
       try {
         return { changes: await deps.registry.diff(req.params.journey, a, b) };
       } catch (err) {
-        return reply.code(404).send({ error: (err as Error).message });
+        return reply.code(statusFor(err)).send({ error: (err as Error).message });
       }
     },
   );
@@ -47,8 +47,17 @@ export function registerRoutes(app: FastifyInstance, deps: ServerDeps): void {
       try {
         return await deps.replay.replay(journey, a as number, b as number, ids);
       } catch (err) {
-        return reply.code(404).send({ error: (err as Error).message });
+        return reply.code(statusFor(err)).send({ error: (err as Error).message });
       }
     },
   );
+}
+
+/**
+ * A missing journey is a 404; anything else (a failing model call, a database
+ * error) is an upstream failure. Collapsing both into 404 hides the cause -
+ * an auth failure should never read as "not found".
+ */
+function statusFor(err: unknown): number {
+  return /not found/i.test((err as Error).message) ? 404 : 502;
 }

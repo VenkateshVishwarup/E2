@@ -99,7 +99,7 @@ export class ReplayEngine {
   }
 
   private async run(spec: JourneySpec, state: LeadState): Promise<ReplayOutcome> {
-    const actions = await this.runtime.step(spec, state);
+    const actions = await this.runtime.step(spec, state, { allowFollowUp: false });
     let decision = "cold";
     let qualified = false;
     for (const a of actions) {

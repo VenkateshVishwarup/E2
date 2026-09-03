@@ -122,6 +122,16 @@ async function main() {
   const lift = await new ReplayEngine(events, registry, stubRuntime(truthByLead))
     .replay(JOURNEY, 3, 4, ids);
 
+  // --- Demo moment 2: declare, don't prompt --------------------------------
+  // The whole edit is making decision_maker required. In a prompt-based system
+  // this is a 400-word rewrite you cannot diff or attribute lift to.
+  const V5 = V4.replace("version: 4", "version: 5").replace(
+    "  decision_maker:\n    type: enum[self, parent, employer]\n    required: false",
+    "  decision_maker:\n    type: enum[self, parent, employer]\n    required: true",
+  );
+  await registry.publish(V5);
+  const changes = await registry.diff(JOURNEY, 4, 5);
+
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
   const scrubbed = await events.query({ leadId: ids[0]!, type: "MessageReceived" });
 
@@ -146,6 +156,9 @@ async function main() {
 
   OBSERVED (from history)   ${JSON.stringify(lift.observedConversionByDecision)}
   MODELLED (projected)      v3 ${lift.a.projectedConversions} · v4 ${lift.b.projectedConversions}
+
+  Spec diff v4 -> v5        ${changes.length} change(s)
+${changes.map((c) => `    ${c.path.padEnd(34)} ${JSON.stringify(c.before)} -> ${JSON.stringify(c.after)}`).join("\n")}
 ──────────────────────────────────────────────────────────────`);
 
   await pool.end();

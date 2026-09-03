@@ -3,6 +3,7 @@ import { createPool } from "@midfunnel/core/db/client";
 import { EventStore } from "@midfunnel/core/events/store";
 import { JourneyRegistry } from "@midfunnel/core/journey/registry";
 import { AgentRuntime } from "@midfunnel/runtime/step";
+import { KeywordExtractor } from "@midfunnel/runtime/keyword-extractor";
 import { ReplayEngine } from "@midfunnel/batch/replay/engine";
 import { registerRoutes, type ServerDeps } from "./routes/replay.js";
 
@@ -25,11 +26,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 export async function main(): Promise<void> {
   const role = process.env.ROLE ?? "all";
   const tenantId = process.env.TENANT_ID ?? "t1";
-  const pool = createPool();
+  // Local dev default so `npm start` works without a .env; production always
+  // supplies DATABASE_URL and createPool still throws when neither is set.
+  const pool = createPool(
+    process.env.DATABASE_URL ?? "postgres://midfunnel:midfunnel@localhost:5433/midfunnel_dev",
+  );
 
   const registry = new JourneyRegistry(pool, tenantId);
   const events = new EventStore(pool, tenantId);
-  const runtime = new AgentRuntime();
+  // Without an Anthropic credential the model-backed extractor cannot run, so
+  // fall back to the deterministic keyword extractor. It is materially weaker;
+  // say so loudly rather than letting anyone mistake its output for the real
+  // runtime's.
+  const hasCredential = Boolean(process.env.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN);
+  if (!hasCredential) {
+    console.warn(
+      "[runtime] no ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN found - " +
+      "using KeywordExtractor. Results are deterministic but NOT representative " +
+      "of the real agent. Set a credential for genuine replay numbers.",
+    );
+  }
+  const runtime = hasCredential
+    ? new AgentRuntime()
+    : new AgentRuntime(new KeywordExtractor() as never, {} as never);
   const replay = new ReplayEngine(events, registry, runtime);
 
   if (role === "web" || role === "all") {

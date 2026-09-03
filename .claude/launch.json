@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "start", "-w", "@midfunnel/web"],
+      "port": 3000
+    },
+    {
+      "name": "console",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "-w", "@midfunnel/console"],
+      "port": 5173
+    }
+  ]
+}

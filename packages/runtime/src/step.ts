@@ -13,6 +13,14 @@ export type Action =
   | { kind: "escalate"; reason: string }
   | { kind: "complete"; qualified: boolean };
 
+export interface StepOptions {
+  /**
+   * Whether the runtime may generate a follow-up question. True for live
+   * conversation; false for replay, where the transcript is already complete.
+   */
+  allowFollowUp?: boolean;
+}
+
 const HUMAN_REQUEST = /\b(human|agent|person|representative|talk to someone|real person)\b/i;
 
 export class AgentRuntime {
@@ -29,7 +37,8 @@ export class AgentRuntime {
    * LeadState and returns intended actions. The caller persists them, which is
    * what lets replay, simulation and live traffic share one runtime.
    */
-  async step(spec: JourneySpec, state: LeadState): Promise<Action[]> {
+  async step(spec: JourneySpec, state: LeadState, opts: StepOptions = {}): Promise<Action[]> {
+    const allowFollowUp = opts.allowFollowUp ?? true;
     // 1. First contact — deterministic, pinned, and never a model call.
     if (state.turns.length === 0) {
       const disclosure = spec.pinned.disclosure ?? "";
@@ -77,7 +86,13 @@ export class AgentRuntime {
       return actions;
     }
 
-    // 7. Otherwise ask for the next missing field.
+    // 7. Otherwise ask for the next missing field — unless follow-up is off.
+    //    Replay runs against a finished transcript: there is no lead left to
+    //    answer, so asking would burn a model call and produce nothing.
+    if (!allowFollowUp) {
+      actions.push({ kind: "complete", qualified: false });
+      return actions;
+    }
     const target = nextField(spec, evidence);
     actions.push({ kind: "send", text: await this.ask(spec, state, evidence, target) });
     return actions;

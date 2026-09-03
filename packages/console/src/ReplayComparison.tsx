@@ -27,84 +27,89 @@ export function ReplayComparison({ journey, a, b }: { journey: string; a: number
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ journey, a, b }),
     })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
+        return r.json();
+      })
       .then(setLift)
       .catch((e: Error) => setError(e.message));
   }, [journey, a, b]);
 
-  if (error) return <p style={{ color: "#b00" }}>Replay failed: {error}</p>;
-  if (!lift) return <p>Replaying…</p>;
+  if (error) return <p className="err">Replay failed: {error}</p>;
+  if (!lift) return <p className="muted">Replaying…</p>;
 
   return (
     <>
-      <p style={{ color: "#555" }}>{lift.n.toLocaleString()} historical leads</p>
+      <p className="muted">{lift.n.toLocaleString()} historical leads</p>
 
-      <div style={{ display: "flex", gap: 24, margin: "24px 0" }}>
+      <div className="arms">
         <Arm label={`v${lift.a.version} (current)`} rate={lift.a.qualifiedRate} />
         <Arm label={`v${lift.b.version} (candidate)`} rate={lift.b.qualifiedRate} />
       </div>
 
-      <p style={{ fontSize: 18 }}>
+      <p className="headline">
         <strong>{lift.absoluteLift >= 0 ? "+" : ""}{pct(lift.absoluteLift)}</strong>{" "}
-        qualification rate
-        <span style={{ color: "#555" }}>
-          {" "}(95% CI {pct(lift.ci95[0])} to {pct(lift.ci95[1])})
+        qualification rate{" "}
+        <span className="muted">
+          (95% CI {pct(lift.ci95[0])} to {pct(lift.ci95[1])})
         </span>
       </p>
 
       {/* Observed and modelled are rendered differently on purpose. Blurring
           the two is the fastest way to lose a room. */}
-      <Section title="Observed — measured from history" tone="#0a7d55">
+      <Band kind="observed" title="Observed — measured from history">
         <ul>
           {Object.entries(lift.observedConversionByDecision).map(([d, r]) => (
             <li key={d}>{d}: {pct(r)} converted</li>
           ))}
         </ul>
-      </Section>
+      </Band>
 
-      <Section title="Modelled — projected from those observed rates" tone="#a66300">
+      <Band kind="modelled" title="Modelled — projected from those observed rates">
         <p>
           v{lift.a.version}: {lift.a.projectedConversions.toFixed(1)} conversions ·{" "}
           v{lift.b.version}: {lift.b.projectedConversions.toFixed(1)} conversions
         </p>
-      </Section>
+      </Band>
 
-      <h2 style={{ fontSize: 15 }}>Diverged on {lift.divergent.length} leads</h2>
-      <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead>
-          <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-            <th>Lead</th><th>v{lift.a.version}</th><th>v{lift.b.version}</th><th>Actually</th>
-          </tr>
-        </thead>
-        <tbody>
-          {lift.divergent.slice(0, 60).map((d) => (
-            <tr key={d.leadId} style={{ borderBottom: "1px solid #f0f0f0" }}>
-              <td><code>{d.leadId}</code></td>
-              <td>{d.a.decision}</td>
-              <td>{d.b.decision}</td>
-              <td>{d.actualOutcome ?? "—"}</td>
+      <h2>Diverged on {lift.divergent.length} leads</h2>
+      <div className="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Lead</th><th>v{lift.a.version}</th><th>v{lift.b.version}</th><th>Actually</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {lift.divergent.slice(0, 60).map((d) => (
+              <tr key={d.leadId}>
+                <td><code>{d.leadId}</code></td>
+                <td>{d.a.decision}</td>
+                <td>{d.b.decision}</td>
+                <td>{d.actualOutcome ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
 
 function Arm({ label, rate }: { label: string; rate: number }) {
   return (
-    <div style={{ flex: 1, border: "1px solid #ddd", borderRadius: 8, padding: 16 }}>
-      <div style={{ color: "#555", fontSize: 12 }}>{label}</div>
-      <div style={{ fontSize: 28 }}>{pct(rate)}</div>
-      <div style={{ color: "#555", fontSize: 12 }}>qualified</div>
+    <div className="arm">
+      <div className="arm-label">{label}</div>
+      <div className="arm-rate">{pct(rate)}</div>
+      <div className="arm-label">qualified</div>
     </div>
   );
 }
 
-function Section({ title, tone, children }: { title: string; tone: string; children: ReactNode }) {
+function Band({ kind, title, children }: { kind: "observed" | "modelled"; title: string; children: ReactNode }) {
   return (
-    <section style={{ borderLeft: `3px solid ${tone}`, paddingLeft: 12, margin: "20px 0" }}>
-      <h3 style={{ fontSize: 13, color: tone, margin: "0 0 4px" }}>{title}</h3>
+    <section className={`band ${kind}`}>
+      <h3>{title}</h3>
       {children}
     </section>
   );

@@ -105,6 +105,19 @@ describe("AgentRuntime.step", () => {
     expect(prompt).not.toContain('\\"field\\":\\"target_program\\"');
   });
 
+  it("never asks a follow-up when allowFollowUp is false", async () => {
+    // Replay runs against a finished transcript - there is no lead to answer,
+    // so a question would be a wasted model call producing nothing.
+    const s = state({ turns: [turn("agent", "hi"), turn("lead", "exec mba")] });
+    const a = asker("should not be used");
+    const rt = new AgentRuntime(extractor(ev({ target_program: "executive_mba" })), a as never);
+    const actions = await rt.step(spec, s, { allowFollowUp: false });
+
+    expect(callsOf(a)).toHaveLength(0);
+    expect(actions.map((x) => x.kind)).toEqual(["extract", "complete"]);
+    expect(actions.at(-1)).toEqual({ kind: "complete", qualified: false });
+  });
+
   it("defers sensitive fields until something else is established", async () => {
     const s = state({ turns: [turn("agent", "hi"), turn("lead", "hello")] });
     const a = asker("Which programme are you considering?");

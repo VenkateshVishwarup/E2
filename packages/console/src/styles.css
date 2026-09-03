@@ -1,0 +1,68 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #16181d;
+  --muted: #5c6370;
+  --line: #e3e6ea;
+  --line-soft: #f0f2f4;
+  --card: #ffffff;
+  --observed: #0a7d55;
+  --modelled: #a66300;
+  --danger: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --fg: #e8eaed;
+    --muted: #9aa3b0;
+    --line: #2c3038;
+    --line-soft: #23262c;
+    --card: #1c1f25;
+    --observed: #4ade9a;
+    --modelled: #e0a340;
+    --danger: #f28078;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.wrap { max-width: 900px; margin: 40px auto; padding: 0 20px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 28px 0 8px; }
+.muted { color: var(--muted); }
+
+.arms { display: flex; gap: 20px; margin: 24px 0; }
+.arm {
+  flex: 1; padding: 16px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--card);
+}
+.arm-label { color: var(--muted); font-size: 12px; }
+.arm-rate { font-size: 30px; font-variant-numeric: tabular-nums; }
+
+.headline { font-size: 18px; margin: 0 0 4px; }
+.headline strong { font-variant-numeric: tabular-nums; }
+
+.band { border-left: 3px solid var(--line); padding-left: 14px; margin: 20px 0; }
+.band h3 { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; margin: 0 0 6px; }
+.band.observed { border-left-color: var(--observed); }
+.band.observed h3 { color: var(--observed); }
+.band.modelled { border-left-color: var(--modelled); }
+.band.modelled h3 { color: var(--modelled); }
+.band ul { margin: 0; padding-left: 18px; }
+.band p { margin: 0; }
+
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); }
+thead tr { border-bottom: 1px solid var(--line); }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.scroll { overflow-x: auto; }
+.err { color: var(--danger); }
