@@ -1,0 +1,16 @@
+{
+  "name": "@midfunnel/web",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/server.ts",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@midfunnel/core": "*",
+    "@midfunnel/runtime": "*",
+    "@midfunnel/batch": "*",
+    "fastify": "^5.0.0"
+  }
+}
