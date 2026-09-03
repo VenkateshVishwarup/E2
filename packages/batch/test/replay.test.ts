@@ -1,0 +1,120 @@
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createPool, type Pool } from "@midfunnel/core/db/client";
+import { migrate } from "@midfunnel/core/db/migrate";
+import { EventStore } from "@midfunnel/core/events/store";
+import { JourneyRegistry } from "@midfunnel/core/journey/registry";
+import type { Action } from "@midfunnel/runtime/step";
+import { ImportBoundary, type HistoricalLead } from "../src/import/importer.js";
+import { ReplayEngine } from "../src/replay/engine.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const V4 = readFileSync(join(HERE, "../../core/test/fixtures/mba-v4.yaml"), "utf8");
+const V3 = V4.replace("version: 4", "version: 3");
+
+const URL = process.env.TEST_DATABASE_URL
+  ?? "postgres://midfunnel:midfunnel@localhost:5433/midfunnel_test";
+
+const IMPORT_OPTS = {
+  journey: "mba-admissions-qualification", journeyVersion: 3, agentId: "agent://engati/import",
+};
+
+const mkLead = (i: number, enrolled: boolean): HistoricalLead => ({
+  externalId: `ext-${i}`, source: "meta_lead_ads", campaignId: "c1",
+  turns: [
+    { role: "agent", text: "Which programme?", at: "2026-06-01T10:00:00Z" },
+    { role: "lead", text: "exec mba this intake", at: "2026-06-01T10:01:00Z" },
+  ],
+  ...(enrolled
+    ? { outcome: { outcome: "enrolled" as const, amount: 45000000, currency: "INR",
+                   observedAt: "2026-07-01T00:00:00Z" } }
+    : {}),
+});
+
+/** Deterministic bucket from a lead id, independent of id format. */
+const bucket = (id: string) =>
+  [...id].reduce((a, c) => (a + c.charCodeAt(0)) % 3, 0);
+
+/** v4 qualifies every lead; v3 qualifies one bucket in three. No model calls. */
+function stubRuntime() {
+  return {
+    step: vi.fn(async (spec: { version: number }, state: { leadId: string }): Promise<Action[]> => {
+      const hot = spec.version === 4 || bucket(state.leadId) === 0;
+      return [
+        { kind: "score", score: hot ? 80 : 20 },
+        { kind: "route", decision: hot ? "hot" : "cold", target: hot ? "handoff.counsellor" : "nurture.x" },
+        { kind: "complete", qualified: hot },
+      ];
+    }),
+  } as never;
+}
+
+let pool: Pool; let store: EventStore; let registry: JourneyRegistry;
+
+beforeAll(async () => { pool = createPool(URL); await migrate(pool); });
+beforeEach(async () => {
+  await pool.query("TRUNCATE events");
+  await pool.query("TRUNCATE journey_versions");
+  store = new EventStore(pool, "t1");
+  registry = new JourneyRegistry(pool, "t1");
+  await registry.publish(V3);
+  await registry.publish(V4);
+});
+afterAll(async () => { await pool.end(); });
+
+describe("ReplayEngine", () => {
+  it("produces a lift with a confidence interval over a real cohort", async () => {
+    const ids = await new ImportBoundary(store, IMPORT_OPTS)
+      .import(Array.from({ length: 30 }, (_, i) => mkLead(i, i % 4 === 0)));
+
+    const lift = await new ReplayEngine(store, registry, stubRuntime())
+      .replay("mba-admissions-qualification", 3, 4, ids);
+
+    expect(lift.n).toBe(30);
+    expect(lift.b.qualifiedRate).toBeGreaterThan(lift.a.qualifiedRate);
+    expect(lift.absoluteLift).toBeCloseTo(lift.b.qualifiedRate - lift.a.qualifiedRate, 5);
+    expect(lift.ci95[0]).toBeLessThanOrEqual(lift.ci95[1]);
+  });
+
+  it("keeps observed and modelled numbers in separate fields", async () => {
+    const ids = await new ImportBoundary(store, IMPORT_OPTS)
+      .import(Array.from({ length: 12 }, (_, i) => mkLead(i, i % 3 === 0)));
+
+    const lift = await new ReplayEngine(store, registry, stubRuntime())
+      .replay("mba-admissions-qualification", 3, 4, ids);
+
+    expect(Object.keys(lift.observedConversionByDecision).length).toBeGreaterThan(0);
+    expect(typeof lift.b.projectedConversions).toBe("number");
+  });
+
+  it("lists divergent leads with the actual historical outcome attached", async () => {
+    const ids = await new ImportBoundary(store, IMPORT_OPTS)
+      .import(Array.from({ length: 30 }, (_, i) => mkLead(i, i === 1)));
+
+    const lift = await new ReplayEngine(store, registry, stubRuntime())
+      .replay("mba-admissions-qualification", 3, 4, ids);
+
+    expect(lift.divergent.length).toBeGreaterThan(0);
+    for (const d of lift.divergent) expect(d.a.decision).not.toBe(d.b.decision);
+    expect(lift.divergent.every((d) => "actualOutcome" in d)).toBe(true);
+  });
+
+  it("writes no events - replay is a pure read over history", async () => {
+    const ids = await new ImportBoundary(store, IMPORT_OPTS).import([mkLead(0, true)]);
+    const before = (await store.query({ leadId: ids[0]! })).length;
+
+    await new ReplayEngine(store, registry, stubRuntime())
+      .replay("mba-admissions-qualification", 3, 4, ids);
+
+    expect((await store.query({ leadId: ids[0]! })).length).toBe(before);
+  });
+
+  it("returns a zero-width interval for an empty cohort", async () => {
+    const lift = await new ReplayEngine(store, registry, stubRuntime())
+      .replay("mba-admissions-qualification", 3, 4, []);
+    expect(lift.n).toBe(0);
+    expect(lift.ci95).toEqual([0, 0]);
+  });
+});
