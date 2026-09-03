@@ -1,0 +1,95 @@
+journey: mba-admissions-qualification
+version: 4
+vertical: edtech
+owner: fde@engati.com
+
+# ─── Who this journey runs as. Privileges are ENFORCED, not declared. ───
+agent:
+  persona: admissions_counsellor_v2      # tone and register; from the agent registry
+  identity: agent://engati/mba-admissions
+  privileges:
+    - crm.upsert_lead:leads_owned_by_this_journey
+    - calendar.book_slot:counsellor_pool_mba
+    - catalog.lookup_program:read
+  data_scope:
+    read:  [lead.self, catalog.programs]
+    deny:  [lead.other_journeys, payment.instruments]
+
+objective:
+  goal: book_counselling_call
+  qualifies_when: score >= 70 AND evidence.complete(required)
+
+# ─── The contract. THIS is the standardisation. ───
+evidence:
+  target_program:
+    type: enum[executive_mba, full_time_mba, online_mba]
+    required: true
+    confidence_min: 0.8
+    description: Which programme the lead is actually considering
+    example: executive_mba
+  timeline:
+    type: enum[this_intake, next_intake, just_exploring]
+    required: true
+    confidence_min: 0.7
+    example: this_intake
+  budget_band:
+    type: enum[under_5L, 5L_to_15L, above_15L, needs_financing]
+    required: true
+    sensitive: true          # never open with it; never ask twice
+    example: 5L_to_15L
+  decision_maker:
+    type: enum[self, parent, employer]
+    required: false
+    example: employer
+  prior_qualification:
+    type: string
+    maxLength: 120
+    required: false
+    example: B.Tech, 4 years work experience
+
+policy:
+  never:
+    - quote_exact_fees
+    - promise_admission
+    - compare_to_competitors
+  must_disclose: ai_agent_on_first_contact
+  escalate_when:
+    - asks_for_human
+    - sentiment < -0.5
+    - evidence.budget_band == needs_financing
+  max_turns: 14
+  quiet_hours: { start: "21:00", end: "09:00", tz: Asia/Kolkata }
+
+# ─── Determinism exactly where it matters ───
+pinned:
+  opening: templates/wa_mba_optin_v4
+  disclosure: "Hi {{name}}, I'm an AI assistant from {{institute}}."
+  handoff: templates/wa_counsellor_intro_v2
+
+scoring:
+  weights:
+    timeline.this_intake: 30
+    budget_band.above_15L: 25
+    budget_band.5L_to_15L: 20
+    decision_maker.self: 15
+    target_program.*: 10
+
+routing:
+  hot:  { when: "score >= 70", target: "handoff.counsellor", sla: 5m }
+  warm: { when: "score >= 40", target: "nurture.mba_warm_14d" }
+  cold: { when: "otherwise",   target: "nurture.mba_longtail_90d" }
+
+tools:
+  - capability: crm.upsert_lead
+    binding: hubspot
+  - capability: calendar.book_slot
+    binding: calendly
+  - capability: catalog.lookup_program
+    binding: internal
+
+# ─── Named metrics as predicates over events. No global "converted". ───
+metrics:
+  qualified_lead: "Routed.decision == hot"
+  booked:         "HandoffCreated exists"
+  conversion:     "OutcomeObserved.outcome in [enrolled, paid]"
+  revenue:        "sum(OutcomeObserved.amount where outcome == paid)"
