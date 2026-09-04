@@ -807,6 +807,7 @@ answer, not a dodge.
 |---|---|---|
 | **Real** | Event Store, Import Boundary, Journey Registry, Agent Runtime, Evidence Extractor, Simulator, Replay Engine, Eval Harness, Copilot | Fully built |
 | **Real but narrow** | Agent Registry, Outcome Ingestor, Tool Broker, Attribution Engine, Insight Engine, Traffic Allocator | Inline agent identity with enforced privileges; one binding, one fold, fixed finding set, simulated cohorts |
+| **Built as specified** | All of the above, M1–M3 | Five console tabs read the real event log. `npm run seed`, `npm run simulate`, `npm run roi` |
 | **Plan only** | WhatsApp/voice adapters, multi-tenancy, on-prem packaging, security model, integration marketplace | Documented, not built |
 
 ---
@@ -933,6 +934,23 @@ diffs **and return rendered views**
 predicates, and the copilot answers a cohort question from real data, renders it, and
 proposes a valid spec diff
 
+**Landed 2026-09-04.** `npm run roi` runs both moments end to end. Five console tabs read
+the same event log. What the build forced that the plan did not anticipate:
+
+- **Routing had to branch on evidence**, not only on score. `evidence.<field> == <value>`
+  is now a predicate atom, because a journey that can only route on a scalar cannot
+  express *"these leads need a different conversation"* — which is moment 7's punchline
+- **Cohort comparisons are unpaired.** The replay bootstrap pairs its arms because both
+  are the same leads through two versions; comparing one cohort against the rest is two
+  disjoint groups of different sizes. Added `bootstrapUnpairedDiffCI` beside it
+- **Findings state what they could not run.** A detector that silently produces nothing
+  reads as a clean bill of health, which is the opposite of the truth when the reason is
+  that no `PolicyEvaluated` event exists yet
+- **`appendMany` corrupted any batch over 3276 events** — the wire protocol counts bind
+  parameters in an Int16. Chunked at 1500 inside a transaction. Any real import crosses
+  this immediately
+- **Token metering is real**, so cost per conversation is measured rather than estimated
+
 ---
 
 ## 16. Workstreams for a Team
@@ -982,6 +1000,11 @@ month three.
 | 18 | **Platform layers treated as ports**, not decided | Shared-vs-separate is explicitly unresolved upstream; ports make that survivable instead of blocking | Picking a side and rebuilding when the platform decides differently |
 | 19 | Eval harness **is** the data-quality validator | Validating against observed outcomes is ground truth; a second LLM with no ground truth measures correlation, not correctness | The proposed secondary-LLM validator pattern |
 | 20 | **OpenAI `gpt-5.6-sol`** as the model provider | Owner's decision (2026-09-04). Slightly cheaper than the Anthropic tier it replaces ($4/$20 vs $5/$25) with a 10× cached-input discount. The `step()` and `extract()` contracts did not change, so the swap touched one module — the first real test of the replaceable-runtime property in §5.4 | Anthropic Claude, as originally specified |
+| 27 | **Metric predicates are a separate language from routing predicates, with two kinds** | A routing predicate asks about one lead's score; a metric asks about one lead's event history. A single evaluator returning `number` for both would let `qualified_lead` contribute rupees to revenue-per-lead. Boolean metrics aggregate as a count of leads; aggregate metrics as a sum over them | One predicate language; a `Converted` event; SQL per metric |
+| 26 | **Attribution reads the metric definitions of the version each lead RAN UNDER** | Using the latest spec would let an edit to `conversion:` silently rewrite last quarter's numbers — the one thing an append-only log exists to prevent. When definitions drifted across versions present in the data, the report says the column sums two questions | Latest-spec-wins (simpler, and wrong); frozen definitions (unusable) |
+| 25 | **Media spend is allocated evenly to leads, and the method travels in the payload** | Ad platforms report per campaign per day; the spine requires a leadId on every event. Even allocation is an assumption, and a customer disputing cost-per-enrolment is entitled to see which assumption produced the number. A weighted model is a customer decision, not a default | Campaign-level cost table outside the spine; weighted allocation chosen for them |
+| 24 | **The copilot proposes through a gate: parse, lint and diff BEFORE returning** | A failure goes back to the model as an error to correct, never out to a human as a suggestion they discover is broken. The copilot therefore cannot propose a journey that would not publish | Return the proposal and validate on publish; let a human catch it |
+| 23 | **Copilot views are descriptors from a closed set, never markup** | A model emitting HTML into the console DOM is an XSS hole. Choosing `bar` from three options demonstrates the conversational-rendering thesis without one — and the console, not the model, owns how it looks | Model-authored HTML; no views at all (loses moment 7's punchline) |
 | 22 | **`dev` profile (terra) for all building, debugging and A/B; `demo` (sol + luna) only for the pitch** | Owner's decision (2026-09-04). A comparison is internally consistent at any tier, so iterating at 40% of the cost changes no conclusion. Upgrading only the agent and the judge puts spend where an audience actually looks | One model everywhere, chosen once |
 | 21 | Accept weaker cache **guarantees** for automatic caching | No explicit breakpoint exists on the Responses API. Prefix ordering now carries the whole burden, and hit rate becomes a measured number rather than an asserted one. Judged an acceptable trade for the price difference — but it is a real loss, recorded in §7.3 | Keeping explicit `cache_control` breakpoints (would have meant staying on Anthropic) |
 
