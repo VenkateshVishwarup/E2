@@ -20,19 +20,34 @@ beforeAll(async () => {
 afterAll(async () => { await pool.end(); });
 
 describe("migrate", () => {
-  it("applies 001_events and creates the events table with agent_id", async () => {
+  it("applies every migration and shapes the events table", async () => {
     const applied = await migrate(pool);
     expect(applied).toContain("001_events.sql");
+    expect(applied).toContain("003_run_isolation.sql");
 
     const { rows } = await pool.query(
       `SELECT column_name, data_type FROM information_schema.columns
        WHERE table_name = 'events' ORDER BY ordinal_position`
     );
     const cols = rows.map((r) => r.column_name);
+    // agent_id: every event carries a principal (M1).
+    // env / run_id: simulated conversations are isolated from live (M2).
     expect(cols).toEqual([
       "id", "tenant_id", "lead_id", "journey", "journey_version",
       "agent_id", "type", "payload", "occurred_at", "recorded_at",
+      "env", "run_id",
     ]);
+  });
+
+  it("defaults pre-existing rows to the live environment", async () => {
+    // 003 adds env with DEFAULT 'live', so nothing written before it silently
+    // becomes simulated data.
+    const { rows } = await pool.query(
+      `SELECT column_default, is_nullable FROM information_schema.columns
+       WHERE table_name = 'events' AND column_name = 'env'`
+    );
+    expect(rows[0].column_default).toContain("live");
+    expect(rows[0].is_nullable).toBe("NO");
   });
 
   it("is idempotent - a second run applies nothing", async () => {

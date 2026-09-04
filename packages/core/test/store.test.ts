@@ -74,3 +74,57 @@ describe("EventStore", () => {
     expect(s.outcomes[0]).toMatchObject({ outcome: "enrolled", amount: 45000000 });
   });
 });
+
+describe("EventStore env isolation", () => {
+  it("defaults to the live environment", async () => {
+    const e = await store.append({ ...base, leadId: "L1", type: "LeadIngested", payload: {} });
+    expect(e.env).toBe("live");
+    expect(e.runId).toBeNull();
+  });
+
+  it("hides simulated events from a live-scoped store", async () => {
+    const sim = new EventStore(pool, "t1", "sim");
+    await sim.append({ ...base, leadId: "S1", runId: "run_1", type: "LeadIngested", payload: {} });
+
+    expect(await store.query({ leadId: "S1" })).toEqual([]);
+    expect(await sim.query({ leadId: "S1" })).toHaveLength(1);
+  });
+
+  it("hides live events from a sim-scoped store", async () => {
+    await store.append({ ...base, leadId: "L1", type: "LeadIngested", payload: {} });
+    const sim = new EventStore(pool, "t1", "sim");
+    expect(await sim.query({ leadId: "L1" })).toEqual([]);
+  });
+
+  it("refuses a simulated event with no run id", async () => {
+    const sim = new EventStore(pool, "t1", "sim");
+    await expect(sim.append({ ...base, leadId: "S1", type: "LeadIngested", payload: {} }))
+      .rejects.toThrow(/runId/i);
+  });
+
+  it("refuses a run id on a live event", async () => {
+    await expect(store.append({
+      ...base, leadId: "L1", runId: "run_1", type: "LeadIngested", payload: {},
+    })).rejects.toThrow(/live/i);
+  });
+
+  it("filters by run id within the sim environment", async () => {
+    const sim = new EventStore(pool, "t1", "sim");
+    await sim.appendMany([
+      { ...base, leadId: "S1", runId: "run_a", type: "LeadIngested", payload: {} },
+      { ...base, leadId: "S2", runId: "run_b", type: "LeadIngested", payload: {} },
+    ]);
+    expect(await sim.query({ runId: "run_a" })).toHaveLength(1);
+  });
+
+  it("folds only within its own environment", async () => {
+    const sim = new EventStore(pool, "t1", "sim");
+    await sim.append({ ...base, leadId: "X", runId: "r", type: "MessageSent",
+                       payload: { renderedText: "sim" } });
+    await store.append({ ...base, leadId: "X", type: "MessageSent",
+                         payload: { renderedText: "live" } });
+
+    expect((await store.fold("X")).turns.map((t) => t.text)).toEqual(["live"]);
+    expect((await sim.fold("X")).turns.map((t) => t.text)).toEqual(["sim"]);
+  });
+});

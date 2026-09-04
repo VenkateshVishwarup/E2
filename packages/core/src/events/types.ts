@@ -13,11 +13,15 @@ export const EVENT_TYPES = [
 
 export type EventType = (typeof EVENT_TYPES)[number];
 
+export const ENVIRONMENTS = ["live", "sim"] as const;
+export type Env = (typeof ENVIRONMENTS)[number];
+
 export const eventInputSchema = z.object({
   leadId: z.string().min(1),
   journey: z.string().min(1),
   journeyVersion: z.number().int().positive(),
   agentId: z.string().min(1, "agentId is required — every event needs a principal"),
+  runId: z.string().min(1).optional(),
   type: z.enum(EVENT_TYPES),
   payload: z.record(z.unknown()),
   occurredAt: z.date().optional(),
@@ -32,6 +36,8 @@ export interface StoredEvent {
   journey: string;
   journeyVersion: number;
   agentId: string;
+  env: Env;
+  runId: string | null;
   type: EventType;
   payload: Record<string, unknown>;
   occurredAt: Date;
