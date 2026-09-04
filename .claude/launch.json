@@ -4,14 +4,35 @@
     {
       "name": "api",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "start", "-w", "@midfunnel/web"],
+      "runtimeArgs": [
+        "run",
+        "start",
+        "-w",
+        "@midfunnel/web"
+      ],
       "port": 3000
     },
     {
       "name": "console",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "-w", "@midfunnel/console"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "-w",
+        "@midfunnel/console"
+      ],
       "port": 5173
+    },
+    {
+      "name": "api-offline",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "start:offline",
+        "-w",
+        "@midfunnel/web"
+      ],
+      "port": 3000
     }
   ]
 }

@@ -4,6 +4,7 @@ import { EventStore } from "@midfunnel/core/events/store";
 import { JourneyRegistry } from "@midfunnel/core/journey/registry";
 import { AgentRuntime } from "@midfunnel/runtime/step";
 import { KeywordExtractor } from "@midfunnel/runtime/keyword-extractor";
+import { offlineClient } from "@midfunnel/runtime/offline-client";
 import { loadEnvFile } from "@midfunnel/runtime/provider";
 import { ReplayEngine } from "@midfunnel/batch/replay/engine";
 import { registerRoutes } from "./routes/replay.js";
@@ -55,7 +56,7 @@ export async function main(): Promise<void> {
   }
   const runtime = hasCredential
     ? new AgentRuntime()
-    : new AgentRuntime(new KeywordExtractor() as never, {} as never);
+    : new AgentRuntime(new KeywordExtractor() as never, offlineClient());
   const replay = new ReplayEngine(events, registry, runtime);
 
   const simulate = new LiveSimulationService(
