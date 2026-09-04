@@ -58,16 +58,16 @@ describe("evaluatePredicate", () => {
 
 describe("route", () => {
   it("routes hot at or above 70", () => {
-    expect(route(spec, 72)).toEqual({ decision: "hot", target: "handoff.counsellor", sla: "5m" });
+    expect(route(spec, 72, {})).toEqual({ decision: "hot", target: "handoff.counsellor", sla: "5m" });
   });
   it("routes warm between 40 and 69", () => {
-    expect(route(spec, 45)).toMatchObject({ decision: "warm", target: "nurture.mba_warm_14d" });
+    expect(route(spec, 45, {})).toMatchObject({ decision: "warm", target: "nurture.mba_warm_14d" });
   });
   it("falls through to cold", () => {
-    expect(route(spec, 10)).toMatchObject({ decision: "cold", target: "nurture.mba_longtail_90d" });
+    expect(route(spec, 10, {})).toMatchObject({ decision: "cold", target: "nurture.mba_longtail_90d" });
   });
   it("takes the first matching rule in declaration order", () => {
-    expect(route(spec, 100).decision).toBe("hot");
+    expect(route(spec, 100, {}).decision).toBe("hot");
   });
 });
 
@@ -94,5 +94,32 @@ describe("evaluatePredicate — sentiment", () => {
 
   it("still refuses an unsupported predicate", () => {
     expect(() => evaluatePredicate("mood == bad", ctx(0))).toThrow(/unsupported predicate/i);
+  });
+});
+
+describe("evidence predicates in routing", () => {
+  it("branches on what the lead said, not only on the score", () => {
+    const ctx = (evidence: Record<string, { value: unknown; confidence: number }>) =>
+      ({ score: 0, evidenceComplete: false, evidence });
+    const financing = ctx({ budget_band: { value: "needs_financing", confidence: 0.9 } });
+
+    expect(evaluatePredicate("evidence.budget_band == needs_financing", financing)).toBe(true);
+    expect(evaluatePredicate("evidence.budget_band == above_15L", financing)).toBe(false);
+    expect(evaluatePredicate("evidence.budget_band != above_15L", financing)).toBe(true);
+  });
+
+  it("treats an unestablished field as not matching, and != as matching", () => {
+    const empty = { score: 0, evidenceComplete: false, evidence: {} };
+    expect(evaluatePredicate("evidence.budget_band == needs_financing", empty)).toBe(false);
+    expect(evaluatePredicate("evidence.budget_band != needs_financing", empty)).toBe(true);
+  });
+
+  it("composes with a score atom", () => {
+    const ctx = {
+      score: 80, evidenceComplete: true,
+      evidence: { budget_band: { value: "needs_financing", confidence: 0.9 } },
+    };
+    expect(evaluatePredicate("score >= 70 AND evidence.budget_band == needs_financing", ctx)).toBe(true);
+    expect(evaluatePredicate("score >= 90 AND evidence.budget_band == needs_financing", ctx)).toBe(false);
   });
 });

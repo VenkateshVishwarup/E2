@@ -85,7 +85,7 @@ export class AgentRuntime {
     // 6. Required evidence complete — score, route, finish.
     if (evidenceComplete(spec, evidence)) {
       const s = score(spec, evidence);
-      const r = route(spec, s);
+      const r = route(spec, s, evidence);
       actions.push({ kind: "score", score: s });
       actions.push({ kind: "route", ...r });
       actions.push({ kind: "complete", qualified: qualifies(spec, s, evidence) });

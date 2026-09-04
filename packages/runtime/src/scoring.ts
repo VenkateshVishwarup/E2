@@ -9,6 +9,8 @@ export interface PredicateContext {
   evidenceComplete: boolean;
   /** -1..1. Absent means neutral, so a sentiment rule simply does not fire. */
   sentiment?: number;
+  /** Established evidence, so a rule can branch on what the lead actually said. */
+  evidence?: Evidence;
 }
 
 /** Weight keys are `field.value`, or `field.*` for any established value. */
@@ -30,7 +32,8 @@ export function score(spec: JourneySpec, evidence: Evidence): number {
  * A deliberately tiny evaluator. Specs are authored data, not code — running
  * them through `eval` would put remote code execution in the runtime.
  * Supported atoms: `score <op> <number>`, `evidence.complete(required)`,
- * `otherwise`. Joined with AND / OR.
+ * `evidence.<field> == <value>`, `sentiment <op> <number>`, `otherwise`.
+ * Joined with AND / OR.
  */
 export function evaluatePredicate(expr: string, ctx: PredicateContext): boolean {
   const trimmed = expr.trim();
@@ -44,6 +47,17 @@ export function evaluatePredicate(expr: string, ctx: PredicateContext): boolean 
   }
 
   if (trimmed === "evidence.complete(required)") return ctx.evidenceComplete;
+
+  // Branching on what the lead said, not only on the score it produced. A
+  // journey that can only route on a scalar cannot express "these leads need a
+  // different conversation", which is the most common thing a marketer wants.
+  const em = /^evidence\.(\w+)\s*(==|!=)\s*(\S+)$/.exec(trimmed);
+  if (em) {
+    const got = ctx.evidence?.[em[1]!];
+    const actual = got?.value === null || got?.value === undefined ? null : String(got.value);
+    const matches = actual !== null && actual === em[3];
+    return em[2] === "==" ? matches : !matches;
+  }
 
   const m = /^score\s*(>=|<=|>|<|==)\s*(-?\d+(?:\.\d+)?)$/.exec(trimmed);
   if (m) {
@@ -73,10 +87,17 @@ export function evaluatePredicate(expr: string, ctx: PredicateContext): boolean 
   throw new Error(`unsupported predicate: ${expr}`);
 }
 
-/** First rule in declaration order wins. */
-export function route(spec: JourneySpec, s: number): RouteResult {
+/**
+ * First rule in declaration order wins.
+ *
+ * `evidence` is required rather than optional: a routing rule that branches on
+ * evidence would silently never fire for any caller that forgot to pass it,
+ * which is the same class of bug as the JSONB key reordering that once routed
+ * every warm lead cold.
+ */
+export function route(spec: JourneySpec, s: number, evidence: Evidence): RouteResult {
   for (const [decision, rule] of Object.entries(spec.routing)) {
-    if (evaluatePredicate(rule.when, { score: s, evidenceComplete: true })) {
+    if (evaluatePredicate(rule.when, { score: s, evidenceComplete: true, evidence })) {
       return { decision, target: rule.target, ...(rule.sla ? { sla: rule.sla } : {}) };
     }
   }

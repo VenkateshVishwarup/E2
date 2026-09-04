@@ -79,7 +79,7 @@ function stubRuntime(truthByLead: Map<string, Record<string, string>>) {
       );
       if (!evidenceComplete(spec, evidence)) return [{ kind: "complete", qualified: false }];
       const s = score(spec, evidence);
-      const r = route(spec, s);
+      const r = route(spec, s, evidence);
       return [
         { kind: "score", score: s },
         { kind: "route", ...r },

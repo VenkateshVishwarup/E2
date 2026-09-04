@@ -4,3 +4,7 @@ export * from "./insights/types.js";
 export * from "./insights/view.js";
 export * from "./insights/detectors.js";
 export * from "./insights/engine.js";
+export * from "./copilot/types.js";
+export * from "./copilot/tools.js";
+export * from "./copilot/copilot.js";
+export * from "./copilot/offline.js";

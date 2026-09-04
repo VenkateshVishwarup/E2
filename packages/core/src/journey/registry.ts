@@ -52,6 +52,17 @@ export class JourneyRegistry {
     return parseSpec(rows[0]!.yaml_source);
   }
 
+  /** The authored YAML, byte for byte. Key order in the source is load-bearing. */
+  async getSource(journey: string, version: number): Promise<string> {
+    const { rows } = await this.pool.query<{ yaml_source: string }>(
+      `SELECT yaml_source FROM journey_versions
+       WHERE tenant_id = $1 AND journey = $2 AND version = $3`,
+      [this.tenantId, journey, version],
+    );
+    if (rows.length === 0) throw new Error(`journey not found: ${journey} v${version}`);
+    return rows[0]!.yaml_source;
+  }
+
   async list(journey: string): Promise<number[]> {
     const { rows } = await this.pool.query(
       `SELECT version FROM journey_versions
@@ -74,10 +85,18 @@ export class JourneyRegistry {
    */
   async diff(journey: string, va: number, vb: number): Promise<SpecChange[]> {
     const [a, b] = await Promise.all([this.get(journey, va), this.get(journey, vb)]);
-    const changes: SpecChange[] = [];
-    walk(a as unknown as Json, b as unknown as Json, "", changes);
-    return changes;
+    return diffSpecs(a, b);
   }
+}
+
+/**
+ * The pure half of `diff`, so a spec that has not been published yet — a
+ * copilot proposal, say — can still be characterised before anyone commits to it.
+ */
+export function diffSpecs(a: JourneySpec, b: JourneySpec): SpecChange[] {
+  const changes: SpecChange[] = [];
+  walk(a as unknown as Json, b as unknown as Json, "", changes);
+  return changes;
 }
 
 type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
