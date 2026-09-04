@@ -1,0 +1,189 @@
+# Mid-Funnel Agent Platform
+
+An AI agent platform for mid-funnel lead qualification and nurturing, built so that every
+number it shows can be traced back to an event that actually happened.
+
+The whole system rests on one idea: **there is a single append-only `events` table, and
+everything else is a fold over it.** Replay, the A/B scoreboard, the ROI report and the
+copilot all read the same log through the same predicates, so they cannot disagree with
+one another. There is no separate analytics pipeline to fall out of sync.
+
+A second idea explains a lot of the design: the log records **observable facts only**.
+There is deliberately no `Converted` event, because "converted" means different things to
+marketing, to sales and to finance. Each tenant declares its own named metrics as
+predicates over the facts, so the platform never has to pick a definition on their behalf.
+
+---
+
+## Run it
+
+Requires Node 22+ and Docker.
+
+```bash
+npm install
+npm run db:up          # Postgres 16 on :5433
+npm run db:migrate
+```
+
+Three commands seed three different stories. Each is self-contained and each ends showable.
+
+```bash
+npm run seed           # M1 — import a cohort, replay v3 against v4, print the lift
+npm run simulate       # M2 — 500 personas, scorecards, alerts, an A/B scoreboard
+npm run roi            # M3 — attribute ROI, derive findings, ask the copilot
+```
+
+`npm run roi` is the one to run before a demo: it seeds v3, v4 and v5 and leaves every
+console tab with something to show.
+
+Then bring up the console:
+
+```bash
+npm start -w @midfunnel/web        # API on :3000
+npm run dev -w @midfunnel/console  # console on :5173
+```
+
+**No API key is needed.** Without one the platform substitutes a deterministic extractor
+and an offline copilot, and says so loudly on every screen that shows their output. The
+data is real either way; the reasoning is not. Add `OPENAI_API_KEY` to `.env` for the real
+thing — `.env` is searched for from the working directory upward and **overrides** the
+ambient environment, because a GUI app handing a process a stale credential it never asked
+for is an expensive hour to lose.
+
+---
+
+## The demo, in eight moments
+
+| # | Moment | Where | Kills the objection |
+|---|---|---|---|
+| 1 | **The money shot** — replay a real cohort through two versions, lift with a confidence interval, drill into the divergent conversations | Replay tab | *"Will customers pay more?"* |
+| 2 | **Declare, don't prompt** — change `decision_maker` from optional to required. That is the entire edit | `journeys/*.yaml`, diff endpoint | Every deployment starts from scratch |
+| 3 | **Sandbox in 60 seconds** — 500 personas against a new version before one real lead sees it | Simulate tab | No way to set up a sandbox |
+| 4 | **Break it on purpose** — ship a bad version; the eval harness catches the policy breach and the alert fires | Simulate tab | No quality tracking |
+| 5 | **A/B scoreboard** — two versions over one paired cohort | A/B tab | No A/B on a live bot |
+| 6 | **ROI, closed loop** — cost per qualified lead and per enrolment, attributed campaign → creative → journey version | ROI tab | Cannot show ROI |
+| 7 | **The copilot** — *"Why is my needs_financing cohort converting worse?"* → real data → a chart → a proposed spec diff | Copilot tab | AI-enabled SaaS, not an AI product |
+| 8 | **No big bang** — the same scoreboard pointed at a parallel-run cohort | A/B tab | Adoption risk |
+
+Moment 1 is the pitch. Moments 2–7 are why it compounds. Moment 8 is why it is safe.
+
+---
+
+## What makes the numbers defensible
+
+These are the details that survive a hostile question, and they are the reason to prefer
+this over a prompt-and-dashboard approach.
+
+- **Observed and modelled are never mixed.** Replay reports historical conversion rates as
+  fact and projected conversions as an estimate, in separate fields, rendered in different
+  colours. Media spend is allocated and labelled as such; model spend is metered from real
+  token usage.
+- **Every comparison carries a 95% confidence interval**, and a finding whose interval
+  spans zero is not shown at all. A point estimate with no interval invites exactly the
+  challenge it cannot survive.
+- **Replay is paired; cohort comparisons are not.** Both arms of a replay are the same
+  leads through two versions, so the interval preserves the pairing. Comparing one cohort
+  against the rest is two disjoint groups of different sizes, where pairing would be
+  meaningless. Two different bootstraps, used deliberately.
+- **Insights say what they could not run.** A detector that silently returns nothing reads
+  as a clean bill of health, which is the opposite of the truth when the reason is that no
+  policy event exists yet.
+- **Metric definitions are versioned with the journey.** Attribution evaluates each lead
+  under the definitions *it ran under*, so editing `conversion:` cannot silently rewrite
+  last quarter.
+- **Simulation is invisible to production.** Every simulated event is `sim`-scoped with a
+  `runId`, enforced in the query builder rather than by remembering to pass a flag.
+- **The agent is a principal.** Every event carries an `agent_id`, and tool privileges are
+  enforced at the broker, not merely declared. An unprivileged call is denied and logged.
+
+---
+
+## The journey spec
+
+A journey is a typed YAML contract, not a prompt. This is what makes lift attributable to
+a named change, and what makes a fleet of deployments standardisable.
+
+```yaml
+journey: mba-admissions-qualification
+version: 4
+
+agent:
+  privileges:                       # enforced at the Tool Broker, not just declared
+    - crm.upsert_lead:leads_owned_by_this_journey
+
+objective:
+  qualifies_when: score >= 70 AND evidence.complete(required)
+
+evidence:                           # this block IS a JSON Schema
+  budget_band:
+    type: enum[under_5L, 5L_to_15L, above_15L, needs_financing]
+    required: true
+    sensitive: true                 # never open with it; never ask twice
+
+routing:                            # first match wins; `otherwise` must be last
+  hot:  { when: "score >= 70", target: "handoff.counsellor", sla: 5m }
+  cold: { when: "otherwise",   target: "nurture.mba_longtail_90d" }
+
+metrics:                            # named predicates over events, per tenant
+  conversion: "OutcomeObserved.outcome in [enrolled, paid]"
+  revenue:    "sum(OutcomeObserved.amount where outcome == paid)"
+```
+
+`npm test` includes a linter that catches journeys which cannot do what they claim — a
+qualifying threshold the required evidence can never reach, a booking metric in a journey
+that never hands off, a metric with a typo'd event type.
+
+---
+
+## API
+
+The full surface is specified in [`docs/api/openapi.yaml`](docs/api/openapi.yaml) and
+served live at `/api/openapi.json`. A test asserts that every route the server registers
+appears in the document and vice versa, so the two cannot drift apart.
+
+Authentication is off by default and enabled by setting `API_TOKEN`. The guard is real
+code on a real hook either way, so enabling it is a variable rather than a project.
+
+---
+
+## Layout
+
+One deployable artifact, five packages, started by role (`ROLE=web|runtime|batch|all`).
+
+| Package | Owns |
+|---|---|
+| `core` | Event store, journey registry, spec format, metric predicates, bootstrap statistics |
+| `runtime` | `step()`, evidence extraction, scoring, routing, tool broker, model profiles, cost metering |
+| `batch` | Import, replay, simulation, eval harness, traffic allocator |
+| `intelligence` | Attribution, insight engine, copilot |
+| `web` + `console` | Fastify API and the React console |
+
+Full design, decision log and roadmap:
+[`docs/superpowers/specs/2026-08-31-midfunnel-agent-platform-design.md`](docs/superpowers/specs/2026-08-31-midfunnel-agent-platform-design.md).
+
+---
+
+## Cost
+
+`terra` is the default for all building, debugging and A/B work — a comparison is
+internally consistent at any tier, because both arms run the same model. `MODEL_PROFILE=demo`
+upgrades the two roles an audience actually judges.
+
+```bash
+npm run simulate         # terra everywhere
+npm run simulate:demo    # sol for the agent and judge, luna for personas
+```
+
+Reasoning effort, not prompt caching, is the cost lever: on a real call output runs roughly
+25× input, so disabling caching entirely costs about 10%.
+
+---
+
+## Tests
+
+```bash
+npm test          # 323 tests
+npm run typecheck
+```
+
+Postgres must be running; the suite uses a separate `midfunnel_test` database.

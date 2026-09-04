@@ -1,0 +1,1678 @@
+openapi: 3.0.3
+
+info:
+  title: Mid-Funnel Agent Platform API
+  version: 0.3.0
+  description: |
+    The read and control surface over the event spine.
+
+    **The one idea to hold on to:** there is a single append-only `events` table, and
+    every number this API returns is a *fold* over it. Replay, the A/B scoreboard, the
+    ROI report and the copilot all read the same log through the same predicates, which
+    is why they cannot disagree with each other. There is no separate analytics pipeline
+    to fall out of sync, and nothing here is precomputed.
+
+    A second idea that explains several response shapes: the log records **observable
+    facts only**. There is deliberately no `Converted` event, because "converted" means
+    different things to marketing, to sales and to finance. Each tenant declares its own
+    named metrics as predicates over the facts (`metrics:` in the journey spec), so
+    responses report metric *names the tenant chose* rather than a fixed vocabulary.
+
+    Money is always an **integer in minor units** — paise for INR, cents for USD. Never a
+    float, anywhere.
+  contact:
+    name: Platform team
+    email: fde@engati.com
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://api.midfunnel.example.com
+    description: Production
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Journeys
+    description: The declarative journey specifications and their versions.
+  - name: Replay
+    description: Counterfactual replay of historical leads through a different version.
+  - name: Simulation
+    description: Synthetic cohorts against a version, before any real lead is touched.
+  - name: Intelligence
+    description: ROI attribution, findings, and the copilot.
+  - name: Operations
+    description: Health and API discovery.
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [Operations]
+      summary: Liveness probe
+      description: |
+        Answers without authentication so a load balancer can probe it. It reports that
+        the process is up; it does not check the database.
+      security: []
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/openapi.json:
+    get:
+      operationId: getOpenApiDocument
+      tags: [Operations]
+      summary: This document
+      description: |
+        The API surface as JSON, unauthenticated so a client can discover it before it
+        has a credential. A test asserts that every route the server registers appears
+        here and vice versa, so this document cannot drift away from the running code.
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI 3.0 document.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: An OpenAPI 3.0 document.
+                additionalProperties: true
+                example: { openapi: "3.0.3" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/openapi.yaml:
+    get:
+      operationId: getOpenApiDocumentAsYaml
+      tags: [Operations]
+      summary: This document, as YAML
+      description: |
+        Byte-for-byte the authored source of this specification. The JSON form is parsed
+        from it, so the two cannot disagree.
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI 3.0 document as YAML.
+          content:
+            application/yaml:
+              schema:
+                type: string
+                description: An OpenAPI 3.0 document in YAML.
+                example: "openapi: 3.0.3"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/journeys/{journey}/versions:
+    get:
+      operationId: listJourneyVersions
+      tags: [Journeys]
+      summary: List the published versions of a journey
+      description: |
+        Newest first. Versions are immutable once published: a change is always a new
+        version, which is what lets lift be attributed to a specific edit.
+      parameters:
+        - $ref: "#/components/parameters/JourneyName"
+      responses:
+        "200":
+          description: The published version numbers, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JourneyVersionList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/journeys/{journey}/diff:
+    get:
+      operationId: diffJourneyVersions
+      tags: [Journeys]
+      summary: Structural diff between two versions
+      description: |
+        A characterisable, path-level diff — `evidence.decision_maker.required` went from
+        `false` to `true`. This is what makes an A/B result actionable: you can attribute
+        lift to a named change. A journey written as a prose prompt cannot be diffed this
+        way, which is the concrete reason this platform declares journeys instead.
+      parameters:
+        - $ref: "#/components/parameters/JourneyName"
+        - $ref: "#/components/parameters/VersionA"
+        - $ref: "#/components/parameters/VersionB"
+      responses:
+        "200":
+          description: Every path that differs between the two versions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpecDiff"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/replay:
+    post:
+      operationId: replayCohort
+      tags: [Replay]
+      summary: Replay historical leads through a different journey version
+      description: |
+        Takes leads that already happened and asks what a different version would have
+        done with them. Returns the qualification lift with a 95% confidence interval and
+        the conversations where the two versions diverged.
+
+        **Read the two number families separately.** `observedConversionByDecision` is
+        measured from history and is a fact. `projectedConversions` applies those observed
+        rates to counterfactual routing and is a model. Presenting them as one number is
+        the fastest way to lose a room, so the API keeps them in separate fields and the
+        console renders them in different colours.
+
+        Omit `leadIds` to replay every lead on the journey.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplayRequest"
+      responses:
+        "200":
+          description: The lift, its interval, and the divergent conversations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lift"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/simulate:
+    post:
+      operationId: simulateCohort
+      tags: [Simulation]
+      summary: Run a synthetic cohort against a journey version
+      description: |
+        Generates `n` personas, runs each through the version end to end, and scores the
+        conversations. Everything it writes is `sim`-scoped and carries a `runId`, so no
+        live-scoped read can ever see it.
+
+        This is how a new version is checked before a real lead meets it. Alerts fire on
+        declared thresholds — a policy breach or an evidence-collection drop — so a bad
+        version is caught here rather than in production.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SimulateRequest"
+      responses:
+        "200":
+          description: Run summary, aggregate quality, and any alerts that fired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimulationResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/compare:
+    post:
+      operationId: compareJourneyVersions
+      tags: [Simulation]
+      summary: A/B two journey versions over one simulated cohort
+      description: |
+        Runs both versions against the **same seeded personas**, which is what makes the
+        comparison paired and the confidence interval honest. An unpaired interval over
+        two independently drawn cohorts would overstate the uncertainty and hide real
+        differences.
+
+        `verdict` is `inconclusive` whenever the interval spans zero. That is a result,
+        not a failure: it means the data does not support a decision yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompareRequest"
+      responses:
+        "200":
+          description: Both arms, the deltas, and the verdict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Scoreboard"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/journeys/{journey}/roi:
+    get:
+      operationId: getAttributionReport
+      tags: [Intelligence]
+      summary: Cost and outcomes attributed campaign to creative to journey version
+      description: |
+        A fold over the event log producing spend, outcome counts and cost per outcome at
+        each level of the hierarchy.
+
+        Two things to know before quoting a number from this endpoint:
+
+        1. **Each lead is evaluated under the metric definitions of the version it ran
+           under**, not the latest spec. Otherwise editing `conversion:` would silently
+           rewrite last quarter. When definitions drifted across versions present in the
+           data, `caveats` says the column sums two different questions.
+        2. **Media spend is allocated, not observed.** Ad platforms report per campaign
+           per day; the spine needs a lead on every event. Allocation is even, the method
+           travels in each `CostObserved` payload, and `caveats` states it. Model spend,
+           by contrast, is metered from real token usage.
+
+        `costPer` is `null` rather than infinity when nothing converted — an undefined
+        ratio, not an enormous one.
+      parameters:
+        - $ref: "#/components/parameters/JourneyName"
+        - $ref: "#/components/parameters/ReportingCurrency"
+      responses:
+        "200":
+          description: Totals, the attribution tree, and the assumptions behind them.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttributionReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/journeys/{journey}/insights:
+    get:
+      operationId: listInsights
+      tags: [Intelligence]
+      summary: Ranked findings about a journey
+      description: |
+        Seven detectors run over the folded log: evidence bottleneck, segment divergence,
+        drop-off, routing miscalibration, timing, policy friction and version regression.
+
+        Every finding carries its support (`n`), and every comparison carries a 95%
+        confidence interval. **A finding whose interval spans zero is not emitted**, and
+        neither is one below thirty leads on either side — noise shown to a marketer costs
+        the credibility the real findings then need. The one exception is routing
+        miscalibration, where "hot and cold are indistinguishable" *is* the finding.
+
+        `skipped` names the detectors that could not run and why. A detector that silently
+        returns nothing reads as a clean bill of health, which is the opposite of the
+        truth when the reason is that no policy event exists yet.
+      parameters:
+        - $ref: "#/components/parameters/JourneyName"
+        - $ref: "#/components/parameters/ConversionMetric"
+        - $ref: "#/components/parameters/QualifiedMetric"
+      responses:
+        "200":
+          description: Findings ranked by severity then effect size.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InsightReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/copilot/ask:
+    post:
+      operationId: askCopilot
+      tags: [Intelligence]
+      summary: Ask a question about a journey, in words
+      description: |
+        The copilot reads through the same folds these endpoints expose — never raw SQL,
+        which from a model is both an injection surface and a hallucination surface. It
+        therefore cannot report a number the ROI endpoint disagrees with.
+
+        It may return a `view` (a rendering descriptor from a closed set: bar, table or
+        stat — never markup, so there is nothing to sanitise) and a `diff` (a proposed new
+        journey version).
+
+        **A returned `diff` has already been parsed, linted and diffed against the current
+        version.** An invalid proposal is handed back to the model to correct and never
+        reaches this response, so anything you receive here would publish as it stands.
+        Nothing is published by this endpoint.
+
+        When no model credential is configured the copilot answers by routing keywords to
+        the same tools and sets `offline: true`. The data is real either way; the
+        reasoning is not.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CopilotRequest"
+      responses:
+        "200":
+          description: The answer, with an optional rendering and an optional proposal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CopilotAnswer"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Set `API_TOKEN` on the server to require it. Unset — the default for local
+        development — the guard is not installed and every endpoint is open. The hook is
+        real code either way, so enabling authentication is a variable, not a project.
+
+  parameters:
+    JourneyName:
+      name: journey
+      in: path
+      required: true
+      description: The journey's stable name, as declared by `journey:` in its spec.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 120
+        pattern: "^[a-z0-9][a-z0-9-]*$"
+        example: mba-admissions-qualification
+
+    VersionA:
+      name: a
+      in: query
+      required: true
+      description: The baseline version — the one currently live.
+      schema:
+        type: integer
+        minimum: 1
+        example: 3
+
+    VersionB:
+      name: b
+      in: query
+      required: true
+      description: The candidate version being evaluated against the baseline.
+      schema:
+        type: integer
+        minimum: 1
+        example: 4
+
+    ReportingCurrency:
+      name: currency
+      in: query
+      required: false
+      description: |
+        ISO 4217 code for the reporting currency. Amounts are integer minor units of it.
+        Defaults to INR.
+      schema:
+        type: string
+        pattern: "^[A-Z]{3}$"
+        default: INR
+        example: INR
+
+    ConversionMetric:
+      name: conversion
+      in: query
+      required: false
+      description: |
+        Which of the tenant's declared metrics means "converted" for this question. There
+        is no platform-wide definition. If the named metric is not declared on the
+        journey, every detector is skipped with that reason rather than substituting a
+        guess.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 60
+        default: conversion
+        example: conversion
+
+    QualifiedMetric:
+      name: qualified
+      in: query
+      required: false
+      description: Which declared metric means "qualified".
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 60
+        default: qualified_lead
+        example: qualified_lead
+
+  responses:
+    BadRequest:
+      description: The request was malformed or violated a stated constraint.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: journey (string), a and b (integers) are required
+    Unauthorized:
+      description: The Bearer token was missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: a valid Bearer token is required
+    NotFound:
+      description: |
+        The journey or version does not exist. Distinguished deliberately from a 502:
+        collapsing both into 404 once hid an authentication failure behind
+        "journey not found" for an afternoon.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "journey not found: mba-admissions-qualification v9"
+    InternalError:
+      description: |
+        An upstream dependency failed — the database, or the model provider. Returned as
+        502 by the running server when the failure is identifiably upstream.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: connection refused
+
+  schemas:
+    Error:
+      type: object
+      description: The single error shape every endpoint uses on every failure.
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          description: A message written for the developer reading it, not an error code.
+          minLength: 1
+          maxLength: 500
+          example: currency must be a three-letter ISO code
+      example:
+        error: currency must be a three-letter ISO code
+
+    HealthStatus:
+      type: object
+      required: [ok]
+      additionalProperties: false
+      properties:
+        ok:
+          type: boolean
+          description: Always true when the process can answer at all.
+          example: true
+      example:
+        ok: true
+
+    JourneyVersionList:
+      type: object
+      required: [versions]
+      additionalProperties: false
+      properties:
+        versions:
+          type: array
+          description: Published version numbers, newest first.
+          items:
+            type: integer
+            minimum: 1
+            example: 4
+          example: [5, 4, 3]
+      example:
+        versions: [5, 4, 3]
+
+    SpecChange:
+      type: object
+      description: One path that differs between two versions.
+      required: [path, kind]
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: Dotted path into the parsed spec.
+          example: evidence.decision_maker.required
+        kind:
+          type: string
+          enum: [added, removed, changed]
+          example: changed
+        before:
+          nullable: true
+          description: The value in the earlier version. Absent when the path was added.
+          example: false
+        after:
+          nullable: true
+          description: The value in the later version. Absent when the path was removed.
+          example: true
+      example:
+        path: evidence.decision_maker.required
+        kind: changed
+        before: false
+        after: true
+
+    SpecDiff:
+      type: object
+      required: [changes]
+      additionalProperties: false
+      properties:
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpecChange"
+      example:
+        changes:
+          - path: version
+            kind: changed
+            before: 4
+            after: 5
+          - path: evidence.decision_maker.required
+            kind: changed
+            before: false
+            after: true
+
+    ReplayRequest:
+      type: object
+      required: [journey, a, b]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: mba-admissions-qualification
+        a:
+          type: integer
+          minimum: 1
+          description: The baseline version.
+          example: 3
+        b:
+          type: integer
+          minimum: 1
+          description: The candidate version.
+          example: 4
+        leadIds:
+          type: array
+          description: |
+            Which historical leads to replay. Omit to replay every lead on the journey.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+            example: L_meta_executive_528
+          example: [L_meta_executive_528, L_meta_executive_696]
+      example:
+        journey: mba-admissions-qualification
+        a: 3
+        b: 4
+
+    ReplayArm:
+      type: object
+      description: One version's result over the replayed cohort.
+      required: [version, qualifiedRate, projectedConversions]
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          example: 4
+        qualifiedRate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Share of the cohort this version would have qualified.
+          example: 0.048
+        projectedConversions:
+          type: number
+          format: double
+          minimum: 0
+          description: |
+            MODELLED. Observed conversion rates per routing decision, applied to this
+            version's counterfactual routing. An estimate, never an observation.
+          example: 89.5
+      example:
+        version: 4
+        qualifiedRate: 0.048
+        projectedConversions: 89.5
+
+    ReplayOutcome:
+      type: object
+      description: What one version did with one lead.
+      required: [leadId, decision, qualified, turns]
+      additionalProperties: false
+      properties:
+        leadId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: L_meta_executive_696
+        decision:
+          type: string
+          description: The routing decision, named by the journey's own routing block.
+          example: hot
+        qualified:
+          type: boolean
+          example: true
+        turns:
+          type: integer
+          minimum: 0
+          example: 6
+      example:
+        leadId: L_meta_executive_696
+        decision: hot
+        qualified: true
+        turns: 6
+
+    Divergence:
+      type: object
+      description: |
+        A lead the two versions treated differently. This list is the answer to
+        "show me where the new version actually changed something".
+      required: [leadId, a, b, actualOutcome]
+      additionalProperties: false
+      properties:
+        leadId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: L_meta_executive_696
+        a:
+          $ref: "#/components/schemas/ReplayOutcome"
+        b:
+          $ref: "#/components/schemas/ReplayOutcome"
+        actualOutcome:
+          type: string
+          nullable: true
+          description: OBSERVED. What really happened to this lead, or null if nothing did.
+          example: paid
+      example:
+        leadId: L_meta_executive_696
+        a: { leadId: L_meta_executive_696, decision: warm, qualified: false, turns: 6 }
+        b: { leadId: L_meta_executive_696, decision: hot, qualified: true, turns: 6 }
+        actualOutcome: paid
+
+    Lift:
+      type: object
+      required:
+        [n, a, b, absoluteLift, ci95, observedConversionByDecision, divergent]
+      additionalProperties: false
+      properties:
+        n:
+          type: integer
+          minimum: 0
+          description: Leads replayed.
+          example: 2000
+        a:
+          $ref: "#/components/schemas/ReplayArm"
+        b:
+          $ref: "#/components/schemas/ReplayArm"
+        absoluteLift:
+          type: number
+          format: double
+          description: b's qualification rate minus a's, in percentage points as a fraction.
+          example: 0.029
+        ci95:
+          $ref: "#/components/schemas/ConfidenceInterval"
+        observedConversionByDecision:
+          type: object
+          description: |
+            OBSERVED. Historical conversion rate for each routing decision, measured from
+            what really happened. This is the factual half of the response.
+          additionalProperties:
+            type: number
+            format: double
+            minimum: 0
+            maximum: 1
+          example: { hot: 0.361, warm: 0.138, cold: 0.008, escalated: 0.002 }
+        divergent:
+          type: array
+          items:
+            $ref: "#/components/schemas/Divergence"
+      example:
+        n: 2000
+        a: { version: 3, qualifiedRate: 0.018, projectedConversions: 66.1 }
+        b: { version: 4, qualifiedRate: 0.048, projectedConversions: 89.5 }
+        absoluteLift: 0.029
+        ci95: [0.023, 0.038]
+        observedConversionByDecision: { hot: 0.361, warm: 0.138, cold: 0.008 }
+        divergent: []
+
+    ConfidenceInterval:
+      type: array
+      description: |
+        A 95% interval as `[low, high]`. Always reported. A point estimate with no
+        interval invites exactly the challenge it cannot survive.
+      minItems: 2
+      maxItems: 2
+      items:
+        type: number
+        format: double
+      example: [0.023, 0.038]
+
+    SimulateRequest:
+      type: object
+      required: [journey, version, n]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: mba-admissions-qualification
+        version:
+          type: integer
+          minimum: 1
+          example: 4
+        n:
+          type: integer
+          minimum: 1
+          maximum: 2000
+          description: |
+            Personas to run. Capped so that one request cannot start a five-figure model
+            bill.
+          example: 500
+        seed:
+          type: integer
+          minimum: 0
+          description: |
+            Persona generation seed. The same seed produces the same cohort, so a result
+            on stage is the result from rehearsal.
+          default: 1
+          example: 1
+      example:
+        journey: mba-admissions-qualification
+        version: 4
+        n: 500
+
+    CompareRequest:
+      type: object
+      required: [journey, a, b, n]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: mba-admissions-qualification
+        a:
+          type: integer
+          minimum: 1
+          example: 4
+        b:
+          type: integer
+          minimum: 1
+          example: 5
+        n:
+          type: integer
+          minimum: 1
+          maximum: 2000
+          example: 200
+        seed:
+          type: integer
+          minimum: 0
+          description: Used for both arms, which is what makes the comparison paired.
+          default: 1
+          example: 1
+      example:
+        journey: mba-admissions-qualification
+        a: 4
+        b: 5
+        n: 200
+
+    LeadOutcome:
+      type: object
+      description: One simulated conversation's result.
+      required: [leadId, completed, qualified, escalated, turns]
+      additionalProperties: true
+      properties:
+        leadId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          example: sim_0f31c7
+        completed:
+          type: boolean
+          description: Whether required evidence was collected and the lead was routed.
+          example: true
+        qualified:
+          type: boolean
+          example: false
+        escalated:
+          type: boolean
+          description: Whether a declared `escalate_when` rule fired.
+          example: false
+        turns:
+          type: integer
+          minimum: 0
+          example: 8
+      example:
+        leadId: sim_0f31c7
+        completed: true
+        qualified: false
+        escalated: false
+        turns: 8
+
+    RunSummary:
+      type: object
+      required:
+        [runId, journey, journeyVersion, n, completed, qualified, escalated, ghosted, avgTurns, results]
+      additionalProperties: false
+      properties:
+        runId:
+          type: string
+          description: |
+            Groups every event this run wrote. All of them are `sim`-scoped, so no
+            live-scoped read can see them.
+          minLength: 1
+          maxLength: 64
+          example: run_9c2f1a
+        journey:
+          type: string
+          example: mba-admissions-qualification
+        journeyVersion:
+          type: integer
+          minimum: 1
+          example: 4
+        n:
+          type: integer
+          minimum: 0
+          example: 500
+        completed:
+          type: integer
+          minimum: 0
+          example: 412
+        qualified:
+          type: integer
+          minimum: 0
+          example: 118
+        escalated:
+          type: integer
+          minimum: 0
+          example: 34
+        ghosted:
+          type: integer
+          minimum: 0
+          description: Personas that stopped replying.
+          example: 54
+        avgTurns:
+          type: number
+          format: double
+          minimum: 0
+          example: 6.4
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeadOutcome"
+      example:
+        runId: run_9c2f1a
+        journey: mba-admissions-qualification
+        journeyVersion: 4
+        n: 500
+        completed: 412
+        qualified: 118
+        escalated: 34
+        ghosted: 54
+        avgTurns: 6.4
+        results: []
+
+    RunQuality:
+      type: object
+      description: |
+        Aggregate scorecard over a run. Completeness and correctness are deterministic
+        checks against each persona's ground truth; the judge scores only what a regex
+        cannot.
+      required:
+        [n, meanCompleteness, meanCorrectness, violationRate, hallucinationRate, ghostRate, escalationRate, qualifiedRate, meanTurns]
+      additionalProperties: false
+      properties:
+        n:
+          type: integer
+          minimum: 0
+          example: 500
+        meanCompleteness:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Share of required evidence fields actually collected.
+          example: 0.86
+        meanCorrectness:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: |
+            Share of extracted values that matched the persona's ground truth. Null when
+            no persona carried ground truth to check against.
+          example: 0.94
+        violationRate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Share of conversations that breached a declared `never` rule.
+          example: 0.004
+        hallucinationRate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          example: 0.01
+        ghostRate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          example: 0.108
+        escalationRate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          example: 0.068
+        qualifiedRate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          example: 0.236
+        meanTurns:
+          type: number
+          format: double
+          minimum: 0
+          example: 6.4
+      example:
+        n: 500
+        meanCompleteness: 0.86
+        meanCorrectness: 0.94
+        violationRate: 0.004
+        hallucinationRate: 0.01
+        ghostRate: 0.108
+        escalationRate: 0.068
+        qualifiedRate: 0.236
+        meanTurns: 6.4
+
+    Alert:
+      type: object
+      description: A declared threshold that a run crossed.
+      required: [id, severity, message, observed, threshold]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 60
+          example: policy_violations
+        severity:
+          type: string
+          enum: [warn, critical]
+          description: |
+            Policy breaches and evidence correctness are critical; ghosting is a warning,
+            because a lead who stops replying is often the lead's own choice whereas a
+            policy breach is always the agent's fault.
+          example: critical
+        message:
+          type: string
+          minLength: 1
+          maxLength: 300
+          example: 4.2% of conversations breached a "never" rule
+        observed:
+          type: number
+          format: double
+          example: 0.042
+        threshold:
+          type: number
+          format: double
+          example: 0.01
+      example:
+        id: policy_violations
+        severity: critical
+        message: 4.2% of conversations breached a "never" rule
+        observed: 0.042
+        threshold: 0.01
+
+    SimulationResult:
+      type: object
+      required: [summary, quality, alerts]
+      additionalProperties: false
+      properties:
+        summary:
+          $ref: "#/components/schemas/RunSummary"
+        quality:
+          $ref: "#/components/schemas/RunQuality"
+        alerts:
+          type: array
+          description: Empty when the run cleared every threshold.
+          items:
+            $ref: "#/components/schemas/Alert"
+      example:
+        summary:
+          runId: run_9c2f1a
+          journey: mba-admissions-qualification
+          journeyVersion: 4
+          n: 500
+          completed: 412
+          qualified: 118
+          escalated: 34
+          ghosted: 54
+          avgTurns: 6.4
+          results: []
+        quality:
+          n: 500
+          meanCompleteness: 0.86
+          meanCorrectness: 0.94
+          violationRate: 0.004
+          hallucinationRate: 0.01
+          ghostRate: 0.108
+          escalationRate: 0.068
+          qualifiedRate: 0.236
+          meanTurns: 6.4
+        alerts: []
+
+    ArmResult:
+      type: object
+      description: One side of an A/B comparison.
+      required: [target, summary, quality]
+      additionalProperties: false
+      properties:
+        target:
+          type: string
+          description: |
+            What this arm was pointed at. The same allocator that splits simulated cohorts
+            later points at a parallel-run cohort, so adoption needs no new machinery.
+          minLength: 1
+          maxLength: 120
+          example: v4
+        summary:
+          $ref: "#/components/schemas/RunSummary"
+        quality:
+          $ref: "#/components/schemas/RunQuality"
+
+    Scoreboard:
+      type: object
+      required:
+        [a, b, qualifiedDelta, qualifiedCi95, completenessDelta, correctnessDelta, verdict]
+      additionalProperties: false
+      properties:
+        a:
+          $ref: "#/components/schemas/ArmResult"
+        b:
+          $ref: "#/components/schemas/ArmResult"
+        qualifiedDelta:
+          type: number
+          format: double
+          description: b's qualification rate minus a's.
+          example: 0.031
+        qualifiedCi95:
+          $ref: "#/components/schemas/ConfidenceInterval"
+        completenessDelta:
+          type: number
+          format: double
+          example: 0.04
+        correctnessDelta:
+          type: number
+          format: double
+          nullable: true
+          example: 0.01
+        verdict:
+          type: string
+          enum: [b_better, a_better, inconclusive]
+          description: |
+            `inconclusive` whenever the interval spans zero. That is a result — the data
+            does not support a decision — not an error.
+          example: b_better
+
+    Totals:
+      type: object
+      description: |
+        Aggregate figures for one node of the attribution tree, or for the whole report.
+        Metric names come from the tenant's own `metrics:` block, so `counts` and `sums`
+        are keyed by names this platform did not choose.
+      required:
+        [leads, counts, sums, mediaCost, modelCost, totalCost, costPer, returnOnSpend]
+      additionalProperties: false
+      properties:
+        leads:
+          type: integer
+          minimum: 0
+          example: 2000
+        counts:
+          type: object
+          description: For each boolean metric, the number of leads it held for.
+          additionalProperties:
+            type: integer
+            minimum: 0
+          example: { qualified_lead: 80, booked: 80, conversion: 66 }
+        sums:
+          type: object
+          description: |
+            For each aggregate metric, its sum over leads. Monetary metrics are integer
+            minor units.
+          additionalProperties:
+            type: number
+          example: { revenue: 297000000 }
+        mediaCost:
+          type: integer
+          minimum: 0
+          description: MODELLED. Ad spend allocated to leads. Minor units.
+          example: 74900000
+        modelCost:
+          type: integer
+          minimum: 0
+          description: |
+            OBSERVED. Metered from real token usage and converted at write time with the
+            rate recorded in the event. Minor units.
+          example: 0
+        totalCost:
+          type: integer
+          minimum: 0
+          example: 74900000
+        costPer:
+          type: object
+          description: |
+            Total cost divided by the count of each boolean metric. **Null when the count
+            is zero** — an undefined ratio, not an infinite one.
+          additionalProperties:
+            type: number
+            nullable: true
+          example: { qualified_lead: 936250, conversion: 1134848 }
+        returnOnSpend:
+          type: object
+          description: |
+            Each aggregate metric divided by total cost. Null when nothing was spent.
+          additionalProperties:
+            type: number
+            nullable: true
+          example: { revenue: 39.7 }
+
+    AttributionNode:
+      type: object
+      description: |
+        One level of campaign to creative to journey version. A lead is attributed to the
+        version that produced its routing decision — the version that actually did the
+        work — falling back to the version it was ingested under.
+      required: [dimension, value, children, leads, counts, sums, mediaCost, modelCost, totalCost, costPer, returnOnSpend]
+      additionalProperties: false
+      allOf:
+        - $ref: "#/components/schemas/Totals"
+        - type: object
+          properties:
+            dimension:
+              type: string
+              enum: [campaign, creative, version]
+              example: campaign
+            value:
+              type: string
+              description: |
+                The campaign id, creative id, or version number as a string. Leads with no
+                campaign are grouped as `(unattributed)`.
+              minLength: 1
+              maxLength: 120
+              example: meta_scholarships
+            children:
+              type: array
+              description: The next level down. Empty at the version level.
+              items:
+                $ref: "#/components/schemas/AttributionNode"
+      example:
+        dimension: campaign
+        value: meta_scholarships
+        leads: 900
+        counts: { qualified_lead: 22, booked: 22, conversion: 20 }
+        sums: { revenue: 90000000 }
+        mediaCost: 13500000
+        modelCost: 0
+        totalCost: 13500000
+        costPer: { conversion: 675000 }
+        returnOnSpend: { revenue: 66.7 }
+        children:
+          - dimension: creative
+            value: cr_fees
+            leads: 450
+            counts: { qualified_lead: 13, booked: 13, conversion: 14 }
+            sums: { revenue: 63000000 }
+            mediaCost: 6750000
+            modelCost: 0
+            totalCost: 6750000
+            costPer: { conversion: 482142 }
+            returnOnSpend: { revenue: 93.3 }
+            children: []
+
+    AttributionReport:
+      type: object
+      required: [journey, currency, metricKinds, total, tree, caveats]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          example: mba-admissions-qualification
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+          example: INR
+        metricKinds:
+          type: object
+          description: |
+            Which declared metrics are counted and which are summed. The distinction is
+            load-bearing: a boolean metric aggregates as a count of leads, an aggregate
+            metric as a sum over them.
+          required: [booleans, aggregates]
+          additionalProperties: false
+          properties:
+            booleans:
+              type: array
+              items:
+                type: string
+                example: conversion
+              example: [qualified_lead, booked, conversion]
+            aggregates:
+              type: array
+              items:
+                type: string
+                example: revenue
+              example: [revenue]
+          example:
+            booleans: [qualified_lead, booked, conversion]
+            aggregates: [revenue]
+        total:
+          $ref: "#/components/schemas/Totals"
+        tree:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttributionNode"
+        caveats:
+          type: array
+          description: |
+            Assumptions a customer is entitled to see beside the numbers — the allocation
+            method, leads with no campaign, leads with no spend ingested, and any metric
+            whose definition drifted between versions present in the data.
+          items:
+            type: string
+            example: Media spend is allocated evenly across the leads a campaign produced that day.
+          example:
+            - Media spend is allocated evenly across the leads a campaign produced that day. A weighted model is a customer decision, not a default.
+      example:
+        journey: mba-admissions-qualification
+        currency: INR
+        metricKinds:
+          booleans: [qualified_lead, booked, conversion]
+          aggregates: [revenue]
+        total:
+          leads: 2000
+          counts: { qualified_lead: 80, booked: 80, conversion: 66 }
+          sums: { revenue: 297000000 }
+          mediaCost: 74900000
+          modelCost: 0
+          totalCost: 74900000
+          costPer: { conversion: 1134848 }
+          returnOnSpend: { revenue: 39.7 }
+        tree: []
+        caveats:
+          - Media spend is allocated evenly across the leads a campaign produced that day.
+
+    Finding:
+      type: object
+      description: One thing worth telling a marketer, with the evidence for it attached.
+      required: [code, severity, claim, detail, n, effect, evidence]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          enum:
+            [evidence_bottleneck, segment_divergence, drop_off, routing_miscalibration, timing, policy_friction, version_regression]
+          example: segment_divergence
+        severity:
+          type: string
+          enum: [high, medium, low]
+          example: medium
+        claim:
+          type: string
+          description: One sentence a marketer can read without translation.
+          minLength: 1
+          maxLength: 400
+          example: evidence.budget_band = needs_financing converts 8.6% worse than the rest of the cohort.
+        detail:
+          type: string
+          description: The numbers behind the claim.
+          minLength: 1
+          maxLength: 500
+          example: 0.2% vs 8.7% (n=509 / 743), 95% CI -10.6% .. -6.5%
+        n:
+          type: integer
+          minimum: 0
+          description: Support. A finding without it is an anecdote.
+          example: 1252
+        effect:
+          type: number
+          format: double
+          minimum: 0
+          description: Magnitude, used for ranking. Absolute difference in rates.
+          example: 0.086
+        ci95:
+          $ref: "#/components/schemas/ConfidenceInterval"
+        suggestion:
+          type: string
+          description: What to change in the spec, when there is a defensible answer.
+          maxLength: 400
+          example: Branch on evidence.budget_band = needs_financing rather than routing it on the shared score.
+        evidence:
+          type: object
+          description: Machine-readable backing for the claim, shaped per finding type.
+          additionalProperties: true
+          example:
+            dimension: evidence.budget_band
+            value: needs_financing
+            cohortRate: 0.002
+            baselineRate: 0.087
+            cohortSize: 509
+
+    InsightReport:
+      type: object
+      required: [journey, leadsAnalysed, findings, skipped]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          example: mba-admissions-qualification
+        leadsAnalysed:
+          type: integer
+          minimum: 0
+          example: 2000
+        findings:
+          type: array
+          description: Ranked by severity, then by effect size.
+          items:
+            $ref: "#/components/schemas/Finding"
+        skipped:
+          type: array
+          description: |
+            Detectors that could not run, and why. Present so that silence is never
+            mistaken for a clean bill of health.
+          items:
+            type: object
+            required: [code, reason]
+            additionalProperties: false
+            properties:
+              code:
+                type: string
+                example: version_regression
+              reason:
+                type: string
+                minLength: 1
+                maxLength: 400
+                example: only one journey version in scope
+          example:
+            - code: version_regression
+              reason: only one journey version in scope
+      example:
+        journey: mba-admissions-qualification
+        leadsAnalysed: 2000
+        findings:
+          - code: segment_divergence
+            severity: medium
+            claim: evidence.budget_band = needs_financing converts 8.6% worse than the rest of the cohort.
+            detail: 0.2% vs 8.7% (n=509 / 743), 95% CI -10.6% .. -6.5%
+            n: 1252
+            effect: 0.086
+            ci95: [-0.106, -0.065]
+            suggestion: Branch on evidence.budget_band = needs_financing rather than routing it on the shared score.
+            evidence: { dimension: evidence.budget_band, value: needs_financing }
+        skipped:
+          - code: version_regression
+            reason: only one journey version in scope
+
+    CopilotRequest:
+      type: object
+      required: [journey, question]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          description: |
+            The journey in scope. Fixed by the caller, never chosen by the model — a
+            copilot that can retarget its own scope is a tenancy hole.
+          minLength: 1
+          maxLength: 120
+          example: mba-admissions-qualification
+        question:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: A question long enough to be an essay is a paste, not a question.
+          example: Why is my needs_financing cohort converting worse?
+      example:
+        journey: mba-admissions-qualification
+        question: Why is my needs_financing cohort converting worse?
+
+    ViewSeriesPoint:
+      type: object
+      required: [label, value]
+      additionalProperties: false
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: needs_financing (n=509)
+        value:
+          type: number
+          format: double
+          example: 0.2
+        band:
+          type: string
+          enum: [observed, modelled]
+          description: |
+            Drives the colouring that keeps measured and estimated numbers visually
+            distinct.
+          example: observed
+
+    View:
+      type: object
+      description: |
+        A rendering descriptor chosen from a closed set. The model never emits markup —
+        HTML from a model into the console DOM would be an XSS hole — so the console owns
+        how this looks and there is nothing here to sanitise.
+      required: [kind, title]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [bar, table, stat]
+          example: bar
+        title:
+          type: string
+          minLength: 1
+          maxLength: 160
+          example: Conversion by evidence.budget_band
+        unit:
+          type: string
+          maxLength: 12
+          description: Appended to each value. Bar views only.
+          example: "%"
+        series:
+          type: array
+          description: Bar views only.
+          items:
+            $ref: "#/components/schemas/ViewSeriesPoint"
+        columns:
+          type: array
+          description: Table views only.
+          items:
+            type: string
+            example: campaign
+          example: [campaign, leads, converted]
+        rows:
+          type: array
+          description: Table views only.
+          items:
+            type: array
+            items:
+              type: string
+              nullable: true
+          example: [[meta_scholarships, "900", "20"]]
+        value:
+          type: string
+          description: Stat views only.
+          maxLength: 60
+          example: "₹11,348"
+        caption:
+          type: string
+          description: Stat views only.
+          maxLength: 160
+          example: cost per enrolment
+      example:
+        kind: bar
+        title: Conversion by evidence.budget_band
+        unit: "%"
+        series:
+          - { label: "needs_financing (n=509)", value: 0.2, band: observed }
+          - { label: "5L_to_15L (n=375)", value: 9.1, band: observed }
+          - { label: "above_15L (n=368)", value: 8.4, band: observed }
+
+    SpecWarning:
+      type: object
+      description: |
+        A lint warning that travels with a proposal rather than being swallowed. A warning
+        hidden here is a warning nobody acts on.
+      required: [code, message]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          enum:
+            [unreachable_qualification, unknown_scoring_field, unreachable_weight, unparseable_metric, unreachable_metric]
+          example: unreachable_qualification
+        message:
+          type: string
+          minLength: 1
+          maxLength: 500
+          example: required evidence can score at most 65, but qualifying needs 70.
+
+    ProposedDiff:
+      type: object
+      description: |
+        A proposed new journey version. Already parsed, linted and diffed before it
+        reached this response, so it would publish as it stands. Nothing has been
+        published.
+      required: [journey, fromVersion, toVersion, rationale, yaml, changes, warnings]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          example: mba-admissions-qualification
+        fromVersion:
+          type: integer
+          minimum: 1
+          example: 5
+        toVersion:
+          type: integer
+          minimum: 2
+          description: Always greater than `fromVersion`; a proposal must bump.
+          example: 6
+        rationale:
+          type: string
+          description: One sentence tying the change to the data that motivated it.
+          minLength: 1
+          maxLength: 400
+          example: budget_band = needs_financing converts 8.6% worse on the shared score; give it its own branch instead.
+        yaml:
+          type: string
+          description: The full proposed spec, ready to publish.
+          minLength: 1
+          example: "journey: mba-admissions-qualification\nversion: 6\n..."
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpecChange"
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpecWarning"
+      example:
+        journey: mba-admissions-qualification
+        fromVersion: 5
+        toVersion: 6
+        rationale: budget_band = needs_financing converts 8.6% worse on the shared score; give it its own branch instead.
+        yaml: "journey: mba-admissions-qualification\nversion: 6\n..."
+        changes:
+          - path: routing.needs_financing_branch
+            kind: added
+            after:
+              when: evidence.budget_band == needs_financing
+              target: nurture.needs_financing_branch
+        warnings: []
+
+    CopilotAnswer:
+      type: object
+      required: [text, usedTools, offline]
+      additionalProperties: false
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          example: evidence.budget_band = needs_financing converts 8.6% worse than the rest of the cohort.
+        view:
+          $ref: "#/components/schemas/View"
+        diff:
+          $ref: "#/components/schemas/ProposedDiff"
+        usedTools:
+          type: array
+          description: |
+            Which read models backed the answer. The audit trail for every number in it.
+          items:
+            type: string
+            enum: [roi, insights, cohort, read_spec, propose_diff]
+            example: insights
+          example: [insights, cohort, read_spec, propose_diff]
+        offline:
+          type: boolean
+          description: |
+            True when no model credential was configured and the answer came from keyword
+            routing over the same tools. The data is real either way; the reasoning is not.
+          example: true

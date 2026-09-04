@@ -14,6 +14,7 @@
     "@midfunnel/runtime": "*",
     "@midfunnel/batch": "*",
     "fastify": "^5.0.0",
-    "@midfunnel/intelligence": "*"
+    "@midfunnel/intelligence": "*",
+    "yaml": "^2.9.0"
   }
 }

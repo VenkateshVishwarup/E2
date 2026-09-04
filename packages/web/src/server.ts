@@ -15,17 +15,38 @@ import { OfflineCopilot } from "@midfunnel/intelligence/copilot/offline";
 import { registerRoutes } from "./routes/replay.js";
 import { registerSimulateRoutes } from "./routes/simulate.js";
 import { registerIntelligenceRoutes } from "./routes/intelligence.js";
+import { registerAuth } from "./auth.js";
+import { registerSpecRoutes } from "./routes/openapi.js";
 import { LiveSimulationService, chooseReplier } from "./simulation-service.js";
 import type { ServerDeps } from "./deps.js";
 
 export type { ServerDeps };
 export * from "./deps.js";
 
-export function buildServer(deps: ServerDeps): FastifyInstance {
+/** Every route the instance registered, for the OpenAPI parity check. */
+export interface RegisteredRoute { method: string; url: string }
+
+export function routesOf(app: FastifyInstance): RegisteredRoute[] {
+  return (app as unknown as { registeredRoutes: RegisteredRoute[] }).registeredRoutes;
+}
+
+export function buildServer(deps: ServerDeps, token: string | null = null): FastifyInstance {
   const app = Fastify({ logger: false });
+
+  // Collected as routes register, so the OpenAPI document can be checked
+  // against what the server actually serves rather than against a hand-kept
+  // list that drifts the first time someone adds an endpoint.
+  const registeredRoutes: RegisteredRoute[] = [];
+  app.addHook("onRoute", (r) => {
+    for (const method of [r.method].flat()) registeredRoutes.push({ method, url: r.url });
+  });
+  app.decorate("registeredRoutes", registeredRoutes);
+
   app.addHook("onRequest", async (_req, reply) => {
     reply.header("access-control-allow-origin", "*");
   });
+  registerAuth(app, token);
+  registerSpecRoutes(app);
   registerRoutes(app, deps);
   registerSimulateRoutes(app, deps);
   registerIntelligenceRoutes(app, deps);
@@ -81,9 +102,15 @@ export async function main(): Promise<void> {
     : new OfflineCopilot(events, registry);
 
   if (role === "web" || role === "all") {
-    const app = buildServer({
-      registry, store: events, replay, simulate, attribution, insights, copilot,
-    });
+    const token = process.env.API_TOKEN ?? null;
+    if (!token) {
+      console.warn("[web] API_TOKEN is not set — the API is unauthenticated. " +
+                   "Fine on a laptop; set one for anything reachable.");
+    }
+    const app = buildServer(
+      { registry, store: events, replay, simulate, attribution, insights, copilot },
+      token,
+    );
     const port = Number(process.env.PORT ?? 3000);
     await app.listen({ port, host: "0.0.0.0" });
     console.log(`[${role}] listening on :${port}`);
