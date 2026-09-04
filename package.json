@@ -16,7 +16,9 @@
     "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/runtime/tsconfig.json && tsc --noEmit -p packages/batch/tsconfig.json && tsc --noEmit -p packages/intelligence/tsconfig.json && tsc --noEmit -p packages/web/tsconfig.json && tsc --noEmit -p packages/console/tsconfig.json",
     "seed": "tsx scripts/seed-and-replay.ts",
     "simulate": "tsx scripts/simulate-and-eval.ts",
-    "simulate:demo": "MODEL_PROFILE=demo tsx scripts/simulate-and-eval.ts"
+    "simulate:demo": "MODEL_PROFILE=demo tsx scripts/simulate-and-eval.ts",
+    "roi": "tsx scripts/close-the-loop.ts",
+    "roi:demo": "MODEL_PROFILE=demo tsx scripts/close-the-loop.ts"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",

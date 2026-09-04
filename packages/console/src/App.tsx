@@ -3,9 +3,11 @@ import "./styles.css";
 import { ReplayComparison } from "./ReplayComparison.js";
 import { SimulateRun } from "./SimulateRun.js";
 import { Scoreboard } from "./Scoreboard.js";
+import { Roi } from "./Roi.js";
+import { CopilotTab } from "./CopilotTab.js";
 
 const JOURNEY = "mba-admissions-qualification";
-const TABS = ["Replay", "Simulate", "A/B"] as const;
+const TABS = ["Replay", "Simulate", "A/B", "ROI", "Copilot"] as const;
 
 export function App() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Replay");
@@ -26,6 +28,8 @@ export function App() {
       {tab === "Replay" && <ReplayComparison journey={JOURNEY} a={3} b={4} />}
       {tab === "Simulate" && <SimulateRun journey={JOURNEY} version={4} />}
       {tab === "A/B" && <Scoreboard journey={JOURNEY} a={4} b={5} />}
+      {tab === "ROI" && <Roi journey={JOURNEY} />}
+      {tab === "Copilot" && <CopilotTab journey={JOURNEY} />}
     </main>
   );
 }

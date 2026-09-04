@@ -182,3 +182,49 @@ describe("versionRegression", () => {
     expect(versionRegression(many(80, () => ({})), CTX).skipped).toMatch(/only one journey version/);
   });
 });
+
+describe("routingMiscalibration — the three diagnoses", () => {
+  const arms = (hotRate: number, coldRate: number) => [
+    ...many(60, (i) => ({ decision: "hot", converted: i < 60 * hotRate })),
+    ...many(60, (i) => ({ decision: "cold", converted: i < 60 * coldRate })),
+  ];
+
+  it("calls it leaky when hot wins but the cold tail still converts", () => {
+    const [f] = routingMiscalibration(arms(0.8, 0.2), CTX).findings;
+    expect(f!.evidence.verdict).toBe("leaky");
+    expect(f!.claim).toMatch(/converted anyway/);
+  });
+
+  it("calls it no signal when the interval spans zero", () => {
+    const [f] = routingMiscalibration(arms(0.5, 0.5), CTX).findings;
+    expect(f!.evidence.verdict).toBe("no_signal");
+    expect(f!.detail).toMatch(/spanning zero/);
+  });
+
+  it("calls it inverted when cold beats hot — never 'spanning zero'", () => {
+    // The bug this guards: an interval that excludes zero in the WRONG
+    // direction being reported as if it spanned zero.
+    const [f] = routingMiscalibration(arms(0.1, 0.6), CTX).findings;
+    expect(f!.evidence.verdict).toBe("inverted");
+    expect(f!.claim).toMatch(/inverted/);
+    expect(f!.detail).not.toMatch(/spanning zero/);
+    expect(f!.detail).toMatch(/wrong direction/);
+  });
+});
+
+describe("segmentDivergence deduplication", () => {
+  it("reports one finding per dimension, not three phrasings of one fact", () => {
+    // Perfectly collinear fields: a lead that converts has all three values.
+    const views = [
+      ...many(70, (i) => ({
+        converted: i < 56,
+        evidence: i < 56
+          ? { timeline: "this_intake", decision_maker: "self", target_program: "executive_mba" }
+          : { timeline: "next_intake", decision_maker: "parent", target_program: "online_mba" },
+      })),
+      ...many(70, () => ({ converted: false, evidence: { timeline: "just_exploring", decision_maker: "employer", target_program: "online_mba" } })),
+    ];
+    const dims = segmentDivergence(views, CTX).findings.map((f) => f.evidence.dimension);
+    expect(new Set(dims).size).toBe(dims.length);
+  });
+});

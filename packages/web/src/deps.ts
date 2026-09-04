@@ -4,6 +4,9 @@ import type { ReplayEngine } from "@midfunnel/batch/replay/engine";
 import type { RunSummary } from "@midfunnel/batch/simulate/runner";
 import type { Alert, RunQuality } from "@midfunnel/batch/eval/alerts";
 import type { Scoreboard } from "@midfunnel/batch/experiment/compare";
+import type { AttributionEngine } from "@midfunnel/intelligence/attribution/engine";
+import type { InsightEngine } from "@midfunnel/intelligence/insights/engine";
+import type { Answer } from "@midfunnel/intelligence/copilot/types";
 
 export interface SimulationResult {
   summary: RunSummary;
@@ -16,11 +19,19 @@ export interface SimulationService {
   compare(journey: string, va: number, vb: number, n: number, seed?: number): Promise<Scoreboard>;
 }
 
+/** Both the model-backed Copilot and the OfflineCopilot satisfy this. */
+export interface CopilotService {
+  ask(journey: string, question: string): Promise<Answer>;
+}
+
 export interface ServerDeps {
   registry: JourneyRegistry;
   store: EventStore;
   replay: ReplayEngine;
   simulate: SimulationService;
+  attribution: AttributionEngine;
+  insights: InsightEngine;
+  copilot: CopilotService;
 }
 
 /**

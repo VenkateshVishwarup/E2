@@ -88,3 +88,34 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .metric-label { color: var(--muted); font-size: 12px; }
 .metric-value { font-size: 22px; font-variant-numeric: tabular-nums; }
 .verdict { font-size: 18px; margin: 16px 0 4px; }
+
+.ask { display: flex; gap: 8px; margin: 16px 0 10px; }
+.ask-input {
+  flex: 1; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card); color: var(--fg); font: inherit;
+}
+.ask-input:disabled { opacity: .6; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; }
+.chip {
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: none; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer;
+}
+.chip:hover:not(:disabled) { color: var(--fg); border-color: var(--fg); }
+.chip:disabled { opacity: .5; cursor: default; }
+.answer { font-size: 16px; line-height: 1.5; margin: 20px 0 4px; }
+.provenance { font-size: 12px; margin-top: 0; }
+.yaml {
+  margin-top: 12px; padding: 12px; border-radius: 8px; background: var(--line-soft);
+  overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; line-height: 1.5; max-height: 400px;
+}
+.view-title { font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+              color: var(--muted); margin: 0 0 10px; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin: 5px 0; }
+.bar-label { width: 210px; font-size: 12px; color: var(--muted); text-align: right;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { flex: 1; height: 18px; background: var(--line-soft); border-radius: 4px; }
+.bar-fill { height: 100%; border-radius: 4px; }
+.bar-fill.observed { background: var(--observed); }
+.bar-fill.modelled { background: var(--modelled); }
+.bar-value { width: 62px; font-size: 12px; font-variant-numeric: tabular-nums; }

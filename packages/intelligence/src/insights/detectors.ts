@@ -38,9 +38,17 @@ const supported = (a: readonly unknown[], b: readonly unknown[]) =>
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Field X has the lowest collection rate; conversations missing it convert Y% worse. */
-export const evidenceBottleneck: Detector = (views) => {
+export const evidenceBottleneck: Detector = (all) => {
+  // Only conversations the lead actually engaged with. A lead who never replied
+  // is missing EVERY field, so including them makes each field look equally
+  // uncollected at exactly the abandonment rate — measuring drop-off twice
+  // instead of finding the field that stalls a live conversation.
+  const views = all.filter((v) => v.leadReplies > 0);
   const fields = [...new Set(views.flatMap((v) => Object.keys(v.evidence)))];
   if (fields.length === 0) return { findings: [], skipped: "no EvidenceExtracted events" };
+  if (views.length < MIN_SUPPORT) {
+    return { findings: [], skipped: `only ${views.length} conversations had a reply` };
+  }
 
   const scored = fields.map((field) => {
     const established = (v: LeadView) => v.evidence[field] !== undefined && v.evidence[field] !== null;
@@ -111,7 +119,14 @@ export const segmentDivergence: Detector = (views) => {
       });
     }
   }
-  return { findings: findings.sort((a, b) => b.effect - a.effect).slice(0, 3) };
+  // At most one finding per dimension. Correlated evidence fields would
+  // otherwise fill the report with three phrasings of the same fact.
+  const best = new Map<string, Finding>();
+  for (const f of findings.sort((a, b) => b.effect - a.effect)) {
+    const dim = String(f.evidence.dimension);
+    if (!best.has(dim)) best.set(dim, f);
+  }
+  return { findings: [...best.values()].slice(0, 3) };
 };
 
 /** Turn N is where abandonment concentrates. */
@@ -136,9 +151,10 @@ export const dropOff: Detector = (views) => {
         .map(([t, c]) => `${t}:${c}`).join("  "),
       n: abandoned.length,
       effect: share,
-      suggestion: turn <= 1
+      suggestion: turn === 0
         ? "The opener is not earning a reply. Change the pinned opening template."
-        : `Reorder evidence so the ${turn + 1}th question is not the sensitive one.`,
+        : `Leads answer ${turn} time${turn === 1 ? "" : "s"} and stop. Reorder evidence so ` +
+          `question ${turn + 1} is not the sensitive one.`,
       evidence: { turn, share, histogram: Object.fromEntries(histogram) },
     }],
   };
@@ -158,31 +174,41 @@ export const routingMiscalibration: Detector = (views) => {
 
   const { ra, rb, ci } = split(cold, hot);
   const missRate = missed.length / cold.length;
-  const discriminates = !spans(ci) && rb > ra;
+
+  // Three genuinely different diagnoses, and calling any of them by another
+  // one's name is worse than saying nothing.
+  const verdict = spans(ci) ? "no_signal" : rb > ra ? "leaky" : "inverted";
+  const CLAIM = {
+    leaky: `${missed.length} leads routed away from handoff converted anyway ` +
+           `(${pct(missRate)} of everything not routed hot).`,
+    no_signal: "The routing threshold is not separating converters: hot and cold " +
+               "convert at statistically indistinguishable rates.",
+    inverted: "Routing is inverted — the leads sent to a counsellor convert WORSE " +
+              "than the ones nurtured instead.",
+  } as const;
+  const WHY = {
+    leaky: "The gap is real, but the cold tail is not empty, so the threshold is " +
+           "leaving revenue behind.",
+    no_signal: "An interval spanning zero means the score is not carrying signal.",
+    inverted: "The interval excludes zero in the wrong direction, so this is not " +
+              "noise: the weights are selecting against conversion.",
+  } as const;
 
   return {
     findings: [{
       code: "routing_miscalibration",
-      severity: discriminates ? (missRate > 0.1 ? "high" : "medium") : "high",
-      claim: discriminates
-        ? `${missed.length} leads routed away from handoff converted anyway ` +
-          `(${pct(missRate)} of everything not routed hot).`
-        : `The routing threshold is not separating converters: hot and cold ` +
-          `convert at statistically indistinguishable rates.`,
+      severity: verdict === "leaky" ? (missRate > 0.1 ? "high" : "medium") : "high",
+      claim: CLAIM[verdict],
       detail: `hot converts ${pct(rb)}, everything else ${pct(ra)}, ` +
-              `95% CI ${pct(ci[0])} .. ${pct(ci[1])}. ` +
-              (discriminates
-                ? "The gap is real, but the cold tail is not empty, so the " +
-                  "threshold is leaving revenue behind."
-                : "An interval spanning zero means the score is not carrying signal."),
+              `95% CI ${pct(ci[0])} .. ${pct(ci[1])}. ${WHY[verdict]}`,
       n: routed.length,
       effect: missRate,
       ci95: ci,
-      suggestion: discriminates
+      suggestion: verdict === "leaky"
         ? "Lower the hot threshold, or add the evidence field these missed leads share."
         : "Re-weight `scoring:` — the current weights do not predict this journey's outcome.",
       evidence: {
-        missed: missed.length, cold: cold.length, hot: hot.length,
+        verdict, missed: missed.length, cold: cold.length, hot: hot.length,
         exampleLeads: missed.slice(0, 5).map((v) => v.leadId),
       },
     }],
@@ -257,14 +283,23 @@ export const policyFriction: Detector = (views) => {
     const { ci, diff } = split(quiet, vs);
     if (spans(ci)) continue;
 
+    // Lead with whichever effect is real. Opening on "0.0% never hear from the
+    // lead again" reads as a non-finding even when the conversion gap is the
+    // reason the finding cleared the bar at all.
+    const silences = disengaged > 0.2;
     findings.push({
       code: "policy_friction",
       severity: disengaged > 0.5 ? "high" : "medium",
-      claim: `"${rule}" fires in ${vs.length} conversations and ${pct(disengaged)} of them ` +
-             `never hear from the lead again.`,
-      detail: `those conversations convert ${pct(Math.abs(diff))} ` +
-              `${diff > 0 ? "better" : "worse"} than ones where no rule fired ` +
-              `(95% CI ${pct(ci[0])} .. ${pct(ci[1])})`,
+      claim: silences
+        ? `"${rule}" fires in ${vs.length} conversations and ${pct(disengaged)} of them ` +
+          `never hear from the lead again.`
+        : `"${rule}" fires in ${vs.length} conversations, and those convert ` +
+          `${pct(Math.abs(diff))} ${diff > 0 ? "better" : "worse"} than ones where no rule fired.`,
+      detail: silences
+        ? `they convert ${pct(Math.abs(diff))} ${diff > 0 ? "better" : "worse"} than ` +
+          `conversations where no rule fired (95% CI ${pct(ci[0])} .. ${pct(ci[1])})`
+        : `${pct(disengaged)} of them go silent afterwards, so the cost is the outcome ` +
+          `rather than the conversation ending (95% CI ${pct(ci[0])} .. ${pct(ci[1])})`,
       n: vs.length + quiet.length,
       effect: Math.abs(diff),
       ci95: ci,

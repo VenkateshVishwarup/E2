@@ -128,3 +128,28 @@ describe("EventStore env isolation", () => {
     expect((await sim.fold("X")).turns.map((t) => t.text)).toEqual(["sim"]);
   });
 });
+
+describe("EventStore.appendMany at scale", () => {
+  it("writes a batch larger than the wire protocol's parameter limit", async () => {
+    // 5000 events x 10 bind parameters is 50000, well past the Int16 ceiling of
+    // 32767. Before chunking, this failed with a parameter-count mismatch that
+    // named neither the cause nor the limit.
+    const events = Array.from({ length: 5000 }, (_, i) => ({
+      ...base, leadId: `L${i}`, type: "LeadIngested" as const,
+      payload: { source: "bulk", n: i },
+    }));
+    const saved = await store.appendMany(events);
+    expect(saved.length).toBe(5000);
+    expect((await pool.query("SELECT count(*)::int n FROM events")).rows[0].n).toBe(5000);
+  });
+
+  it("commits a large batch all or nothing", async () => {
+    const events = Array.from({ length: 2000 }, (_, i) => ({
+      ...base, leadId: `L${i}`, type: "LeadIngested" as const, payload: {},
+    }));
+    // An invalid event in the last chunk must leave the first chunks unwritten.
+    events.push({ ...base, leadId: "", type: "LeadIngested", payload: {} });
+    await expect(store.appendMany(events)).rejects.toThrow();
+    expect((await pool.query("SELECT count(*)::int n FROM events")).rows[0].n).toBe(0);
+  });
+});

@@ -5,10 +5,16 @@ import { JourneyRegistry } from "@midfunnel/core/journey/registry";
 import { AgentRuntime } from "@midfunnel/runtime/step";
 import { KeywordExtractor } from "@midfunnel/runtime/keyword-extractor";
 import { offlineClient } from "@midfunnel/runtime/offline-client";
-import { credentialFingerprint, describeModels, judgeWeakerThanJudged, loadEnvFile } from "@midfunnel/runtime/provider";
+import { credentialFingerprint, describeModels, hasCredential, judgeWeakerThanJudged, loadEnvFile }
+  from "@midfunnel/runtime/provider";
 import { ReplayEngine } from "@midfunnel/batch/replay/engine";
+import { AttributionEngine } from "@midfunnel/intelligence/attribution/engine";
+import { InsightEngine } from "@midfunnel/intelligence/insights/engine";
+import { Copilot } from "@midfunnel/intelligence/copilot/copilot";
+import { OfflineCopilot } from "@midfunnel/intelligence/copilot/offline";
 import { registerRoutes } from "./routes/replay.js";
 import { registerSimulateRoutes } from "./routes/simulate.js";
+import { registerIntelligenceRoutes } from "./routes/intelligence.js";
 import { LiveSimulationService, chooseReplier } from "./simulation-service.js";
 import type { ServerDeps } from "./deps.js";
 
@@ -22,6 +28,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerRoutes(app, deps);
   registerSimulateRoutes(app, deps);
+  registerIntelligenceRoutes(app, deps);
   return app;
 }
 
@@ -46,29 +53,36 @@ export async function main(): Promise<void> {
   // fall back to the deterministic keyword extractor. It is materially weaker;
   // say so loudly rather than letting anyone mistake its output for the real
   // runtime's.
-  const hasCredential = Boolean(process.env.OPENAI_API_KEY);
+  const credentialled = hasCredential();
   console.log(`[runtime] credential: ${credentialFingerprint()}`);
   console.log(`[runtime] models: ${describeModels()}`);
   const mismatch = judgeWeakerThanJudged();
   if (mismatch) console.warn(`[runtime] WARNING: ${mismatch}`);
-  if (!hasCredential) {
+  if (!credentialled) {
     console.warn(
       "[runtime] no OPENAI_API_KEY found (checked the environment and .env) - " +
       "using KeywordExtractor. Results are deterministic but NOT representative " +
       "of the real agent. Set a credential for genuine replay numbers.",
     );
   }
-  const runtime = hasCredential
+  const runtime = credentialled
     ? new AgentRuntime()
     : new AgentRuntime(new KeywordExtractor() as never, offlineClient());
   const replay = new ReplayEngine(events, registry, runtime);
 
   const simulate = new LiveSimulationService(
-    pool, tenantId, registry, runtime, chooseReplier(hasCredential),
+    pool, tenantId, registry, runtime, chooseReplier(credentialled),
   );
+  const attribution = new AttributionEngine(events, registry);
+  const insights = new InsightEngine(events, registry);
+  const copilot = credentialled
+    ? new Copilot(events, registry)
+    : new OfflineCopilot(events, registry);
 
   if (role === "web" || role === "all") {
-    const app = buildServer({ registry, store: events, replay, simulate });
+    const app = buildServer({
+      registry, store: events, replay, simulate, attribution, insights, copilot,
+    });
     const port = Number(process.env.PORT ?? 3000);
     await app.listen({ port, host: "0.0.0.0" });
     console.log(`[${role}] listening on :${port}`);

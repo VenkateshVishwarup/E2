@@ -8,6 +8,19 @@ import {
 const COLS = `id, tenant_id, lead_id, journey, journey_version,
               agent_id, env, run_id, type, payload, occurred_at, recorded_at`;
 
+const PARAMS_PER_EVENT = 10;
+
+/**
+ * The Postgres wire protocol counts bind parameters in an Int16, so a single
+ * statement carries at most 32767 of them. Past that the count wraps negative
+ * and the server rejects the message with a parameter-count mismatch that names
+ * neither the cause nor the limit.
+ *
+ * 1500 events per statement leaves generous headroom and is still one round
+ * trip per 1500 rows. Importing a real cohort crosses this immediately.
+ */
+const CHUNK = 1500;
+
 export interface EventFilter {
   leadId?: string;
   journey?: string;
@@ -48,11 +61,34 @@ export class EventStore {
 
   async appendMany(events: EventInput[]): Promise<StoredEvent[]> {
     if (events.length === 0) return [];
+    // Validate everything before writing anything: a batch that fails halfway
+    // through on the tenth chunk has already committed nine.
     const valid = events.map((e) => this.validate(e));
+    if (valid.length <= CHUNK) return this.insert(valid);
 
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const out: StoredEvent[] = [];
+      for (let i = 0; i < valid.length; i += CHUNK) {
+        out.push(...await this.insert(valid.slice(i, i + CHUNK), client));
+      }
+      await client.query("COMMIT");
+      return out;
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async insert(
+    valid: EventInput[], on: Queryable = this.pool,
+  ): Promise<StoredEvent[]> {
     const values: unknown[] = [];
     const tuples = valid.map((e, i) => {
-      const o = i * 10;
+      const o = i * PARAMS_PER_EVENT;
       values.push(
         this.tenantId, e.leadId, e.journey, e.journeyVersion,
         e.agentId, this.env, e.runId ?? null, e.type,
@@ -62,7 +98,7 @@ export class EventStore {
              `$${o + 6},$${o + 7},$${o + 8},$${o + 9},$${o + 10})`;
     });
 
-    const { rows } = await this.pool.query<EventRow>(
+    const { rows } = await on.query<EventRow>(
       `INSERT INTO events (tenant_id, lead_id, journey, journey_version,
                            agent_id, env, run_id, type, payload, occurred_at)
        VALUES ${tuples.join(",")} RETURNING ${COLS}`,
@@ -125,6 +161,11 @@ export class EventStore {
     }
     return state;
   }
+}
+
+/** A pool or a checked-out client — both can run a parameterised query. */
+interface Queryable {
+  query<R>(sql: string, values: unknown[]): Promise<{ rows: R[] }>;
 }
 
 /** Shape of a row as it comes back from Postgres (snake_case, loose types). */

@@ -220,5 +220,28 @@ export function credentialFingerprint(): string {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return "none";
   const source = fromEnvFile.has("OPENAI_API_KEY") ? ".env" : "inherited environment";
-  return `${key.length} chars, ending ${key.slice(-4)} (from ${source})`;
+  const suffix = isPlaceholder(key) ? " — PLACEHOLDER, not a real key" : "";
+  return `${key.length} chars, ending ${key.slice(-4)} (from ${source})${suffix}`;
+}
+
+/**
+ * `.env.example` ships a placeholder and people copy it. Because loadEnvFile
+ * OVERRIDES the inherited environment, a copied placeholder beats a real key
+ * and every call 401s — with the confusing symptom that a credential is
+ * clearly present. Recognise the shape and treat it as absent.
+ */
+export function isPlaceholder(key: string): boolean {
+  return /^(your|sk-\.\.\.|<|xxx|changeme|replace)/i.test(key.trim())
+      || /(-|_)?(KEY|HERE|PLACEHOLDER|TODO)$/.test(key.trim())
+      || key.includes("...");
+}
+
+/**
+ * The single answer to "can this process call the model?". Every caller used to
+ * ask `Boolean(process.env.OPENAI_API_KEY)` and each one would have been fooled
+ * by a placeholder.
+ */
+export function hasCredential(): boolean {
+  const key = process.env.OPENAI_API_KEY;
+  return Boolean(key) && !isPlaceholder(key!);
 }
