@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, parse } from "node:path";
 import OpenAI from "openai";
 
 /**
@@ -178,18 +179,28 @@ const fromEnvFile = new Set<string>();
  * .env someone deliberately created is the more trustworthy signal. Silently
  * preferring the ambient value is a very expensive hour to lose, so the file
  * wins here and `credentialFingerprint()` reports which source was used.
+ *
+ * The file is searched for from the working directory upward, because in a
+ * workspace `npm run start -w @midfunnel/web` runs with cwd inside the package
+ * and the .env lives at the repo root. Resolving only against cwd means the
+ * file is quietly not found in exactly the case people run most.
  */
 export function loadEnvFile(path = ".env"): string[] {
   // Each call reflects only what IT applied, so a later load with a different
   // file cannot leave this reporting a stale source.
   fromEnvFile.clear();
+  envFilePath = null;
+
+  const found = isAbsolute(path) ? path : findUpward(path);
+  if (!found) return []; // No .env is fine; the environment may supply the key.
 
   let text: string;
   try {
-    text = readFileSync(path, "utf8");
+    text = readFileSync(found, "utf8");
   } catch {
-    return []; // No .env is fine; the environment may supply the key.
+    return [];
   }
+  envFilePath = found;
 
   const applied: string[] = [];
   for (const raw of text.split(/\r?\n/)) {
@@ -219,7 +230,9 @@ export function loadEnvFile(path = ".env"): string[] {
 export function credentialFingerprint(): string {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return "none";
-  const source = fromEnvFile.has("OPENAI_API_KEY") ? ".env" : "inherited environment";
+  const source = fromEnvFile.has("OPENAI_API_KEY")
+    ? (envFilePath ?? ".env")
+    : "inherited environment";
   const suffix = isPlaceholder(key) ? " — PLACEHOLDER, not a real key" : "";
   return `${key.length} chars, ending ${key.slice(-4)} (from ${source})${suffix}`;
 }
@@ -230,6 +243,23 @@ export function credentialFingerprint(): string {
  * and every call 401s — with the confusing symptom that a credential is
  * clearly present. Recognise the shape and treat it as absent.
  */
+/** Absolute path of the .env actually applied, for honest reporting. */
+let envFilePath: string | null = null;
+
+function findUpward(name: string): string | null {
+  let dir = process.cwd();
+  const root = parse(dir).root;
+  for (;;) {
+    const candidate = join(dir, name);
+    try {
+      readFileSync(candidate, "utf8");
+      return candidate;
+    } catch { /* keep walking */ }
+    if (dir === root) return null;
+    dir = dirname(dir);
+  }
+}
+
 export function isPlaceholder(key: string): boolean {
   return /^(your|sk-\.\.\.|<|xxx|changeme|replace)/i.test(key.trim())
       || /(-|_)?(KEY|HERE|PLACEHOLDER|TODO)$/.test(key.trim())

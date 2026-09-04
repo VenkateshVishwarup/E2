@@ -31,6 +31,14 @@ import type { Answer } from "@midfunnel/intelligence/copilot/types";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const V4 = readFileSync(join(HERE, "../packages/core/test/fixtures/mba-v4.yaml"), "utf8");
+// The same v3 and v5 the M1 script publishes, so Replay and A/B still have
+// something to compare after this script has run. One command, whole console.
+const V3 = V4.replace("version: 4", "version: 3")
+             .replace("    decision_maker.self: 15", "    decision_maker.self: 5");
+const V5 = V4.replace("version: 4", "version: 5").replace(
+  "  decision_maker:\n    type: enum[self, parent, employer]\n    required: false",
+  "  decision_maker:\n    type: enum[self, parent, employer]\n    required: true",
+);
 
 const TENANT = "t1";
 const JOURNEY = "mba-admissions-qualification";
@@ -86,9 +94,18 @@ const STAGES: Array<{ p: number; fields: string[] }> = [
 /** A lead who needs financing rarely enrols when the journey offers no scholarship path. */
 const FINANCING_PENALTY = 0.12;
 const SELF_BOOST = 1.25;
+/**
+ * Routing hot books a counsellor call, and a counsellor call converts. Without
+ * this the route would be decorative — correlated with nothing — and
+ * `routing_miscalibration` would be reading noise.
+ */
+const HOT_LIFT = 2.4;
+/** Share of the cohort still on the older version, as a partial rollout leaves it. */
+const V3_SHARE = 0.3;
 
 interface Seeded {
   leadId: string;
+  version: 3 | 4;
   campaignId: string;
   creativeId: string;
   hour: number;
@@ -98,6 +115,8 @@ interface Seeded {
   collected: string[];
   /** Lead replies before the conversation stalled. */
   replies: number;
+  /** Conversion probability before the routing lift is applied. */
+  baseP: number;
   converts: boolean;
 }
 
@@ -120,7 +139,7 @@ function cohort(n: number): Seeded[] {
       const complete = collected.length === 4;
 
       // Only a conversation that finished qualifying can produce an enrolment.
-      const p = complete
+      const base = complete
         ? P_CONVERT[timeline]! *
           (financing ? FINANCING_PENALTY : 1) *
           (decisionMaker === "self" ? SELF_BOOST : 1)
@@ -128,6 +147,7 @@ function cohort(n: number): Seeded[] {
 
       out.push({
         leadId: `L_${campaign.id}_${k}`,
+        version: rand() < V3_SHARE ? 3 : 4,
         campaignId: campaign.id,
         creativeId: campaign.creatives[k % campaign.creatives.length]!,
         hour: 4 + Math.floor(rand() * 14),
@@ -143,7 +163,9 @@ function cohort(n: number): Seeded[] {
         financing,
         collected,
         replies: collected.length === 0 ? 0 : Math.max(1, collected.length - 1),
-        converts: rand() < p,
+        // Resolved once the route is known, in the event loop below.
+        baseP: base,
+        converts: false,
       });
     }
   }
@@ -161,15 +183,19 @@ async function main() {
 
   const events = new EventStore(pool, TENANT);
   const registry = new JourneyRegistry(pool, TENANT);
+  await registry.publish(V3);
   await registry.publish(V4);
-  const spec = parseSpec(V4);
+  await registry.publish(V5);
+  const specs = { 3: parseSpec(V3), 4: parseSpec(V4) } as const;
 
   // ── Run the journey over the cohort and record what happened ─────────────
   const leads = cohort(2000);
+  const outcomeRand = mulberry32(77);
   const rows: EventInput[] = [];
   for (const lead of leads) {
+    const spec = specs[lead.version];
     const at = (m: number) => new Date(`${DAY}T${String(lead.hour).padStart(2, "0")}:${String(m).padStart(2, "0")}:00Z`);
-    const base = { leadId: lead.leadId, journey: JOURNEY, journeyVersion: 4, agentId: AGENT };
+    const base = { leadId: lead.leadId, journey: JOURNEY, journeyVersion: lead.version, agentId: AGENT };
     const s = score(spec, lead.evidence);
     const r = route(spec, s, lead.evidence);
 
@@ -205,6 +231,9 @@ async function main() {
       rows.push({ ...base, type: "HandoffCreated", occurredAt: at(5),
         payload: { target: r.target, qualified: qualifies(spec, s, lead.evidence) } });
     }
+    // The route is applied here, not in the generator, because it depends on
+    // the version this lead ran under.
+    lead.converts = outcomeRand() < lead.baseP * (r.decision === "hot" ? HOT_LIFT : 1);
     if (lead.converts) {
       rows.push({ ...base, type: "OutcomeObserved", occurredAt: new Date("2026-07-01T00:00:00Z"),
         payload: { outcome: "paid", amount: FEE, currency: "INR", source: "crm" } });
@@ -238,32 +267,27 @@ async function main() {
   const head = ["campaign / creative".padEnd(26), "leads".padStart(6), "qual".padStart(6),
                 "enrol".padStart(6), "spend".padStart(11), "cost/enrol".padStart(12), "ROAS".padStart(7)];
   console.log("  " + head.join(" "));
-  for (const node of roi.tree) {
-    const line = (label: string, n: typeof node, indent: string) => {
-      const roas = n.returnOnSpend.revenue;
-      console.log("  " + [
-        (indent + label).padEnd(26),
-        String(n.leads).padStart(6),
-        String(n.counts.qualified_lead ?? 0).padStart(6),
-        String(n.counts.conversion ?? 0).padStart(6),
-        money(n.totalCost).padStart(11),
-        money(n.costPer.conversion).padStart(12),
-        (roas === null ? "—" : `${roas.toFixed(1)}x`).padStart(7),
-      ].join(" "));
-    };
-    line(node.value, node, "");
-    for (const child of node.children) line(child.value, child, "  ↳ ");
-  }
+  const line = (label: string, n: (typeof roi.tree)[number] | typeof roi.total, indent: string) => {
+    const roas = n.returnOnSpend.revenue;
+    console.log("  " + [
+      (indent + label).padEnd(26),
+      String(n.leads).padStart(6),
+      String(n.counts.qualified_lead ?? 0).padStart(6),
+      String(n.counts.conversion ?? 0).padStart(6),
+      money(n.totalCost).padStart(11),
+      money(n.costPer.conversion).padStart(12),
+      (roas === null ? "—" : `${roas.toFixed(1)}x`).padStart(7),
+    ].join(" "));
+  };
+  const walk = (nodes: typeof roi.tree, depth: number) => {
+    for (const n of nodes) {
+      line(n.dimension === "version" ? `v${n.value}` : n.value, n, "  ".repeat(depth) + (depth ? "↳ " : ""));
+      walk(n.children, depth + 1);
+    }
+  };
+  walk(roi.tree, 0);
   console.log("  " + "-".repeat(84));
-  console.log("  " + [
-    "TOTAL".padEnd(26),
-    String(roi.total.leads).padStart(6),
-    String(roi.total.counts.qualified_lead ?? 0).padStart(6),
-    String(roi.total.counts.conversion ?? 0).padStart(6),
-    money(roi.total.totalCost).padStart(11),
-    money(roi.total.costPer.conversion).padStart(12),
-    (roi.total.returnOnSpend.revenue === null ? "—" : `${roi.total.returnOnSpend.revenue.toFixed(1)}x`).padStart(7),
-  ].join(" "));
+  line("TOTAL", roi.total, "");
 
   console.log(`
   media ${money(roi.total.mediaCost)} allocated · model ${money(roi.total.modelCost)} metered`);

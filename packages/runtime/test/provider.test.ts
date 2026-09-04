@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { writeFileSync, rmSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeProfile, credentialFingerprint, describeModels, judgeWeakerThanJudged, loadEnvFile, modelFor } from "../src/provider.js";
+import { activeProfile, credentialFingerprint, describeModels, hasCredential, isPlaceholder,
+  judgeWeakerThanJudged, loadEnvFile, modelFor } from "../src/provider.js";
 
 let dir: string;
 const saved = process.env.OPENAI_API_KEY;
@@ -38,7 +39,7 @@ describe("loadEnvFile", () => {
     const f = join(dir, ".env");
     writeFileSync(f, "OPENAI_API_KEY=sk-real-riwA\n");
     loadEnvFile(f);
-    expect(credentialFingerprint()).toContain("from .env");
+    expect(credentialFingerprint()).toContain(`from ${f}`);
     expect(credentialFingerprint()).toContain("ending riwA");
   });
 
@@ -65,12 +66,31 @@ describe("loadEnvFile", () => {
     expect(loadEnvFile(join(dir, "absent.env"))).toEqual([]);
   });
 
+  it("prefers the nearest .env when several exist on the way up", () => {
+    const nested = join(dir, "packages", "web");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(dir, ".env"), "MF_WHICH=root\n");
+    writeFileSync(join(dir, "packages", ".env"), "MF_WHICH=nearer\n");
+
+    const cwd = process.cwd();
+    try {
+      process.chdir(nested);
+      loadEnvFile();
+      expect(process.env.MF_WHICH).toBe("nearer");
+    } finally {
+      process.chdir(cwd);
+      delete process.env.MF_WHICH;
+    }
+  });
+
   it("does not report a stale source after a later load", () => {
     process.env.OPENAI_API_KEY = "sk-a-riwA";
     const withKey = join(dir, "a.env");
     writeFileSync(withKey, "OPENAI_API_KEY=sk-a-riwA\n");
     loadEnvFile(withKey);
-    expect(credentialFingerprint()).toContain("from .env");
+    // The fingerprint names the file it actually applied, not the literal
+    // ".env" — in a workspace those are different directories.
+    expect(credentialFingerprint()).toContain(`from ${withKey}`);
 
     const without = join(dir, "b.env");
     writeFileSync(without, "MF_PROBE=x\n");
@@ -146,5 +166,69 @@ describe("model profiles", () => {
     expect(d).toContain("profile=demo");
     expect(d).toContain("runtime=gpt-5.6-sol");
     expect(d).toContain("persona=gpt-5.6-luna");
+  });
+});
+
+describe("credential detection", () => {
+  const KEY = "OPENAI_API_KEY";
+  let original: string | undefined;
+  beforeEach(() => { original = process.env[KEY]; });
+  afterEach(() => {
+    if (original === undefined) delete process.env[KEY];
+    else process.env[KEY] = original;
+  });
+
+  it("recognises the shapes people actually paste from an example file", () => {
+    for (const k of ["your-key-here", "sk-proj-...-KEY", "<YOUR_KEY>", "sk-...abc", "CHANGEME"]) {
+      expect(isPlaceholder(k)).toBe(true);
+    }
+  });
+
+  it("does not mistake a real key for a placeholder", () => {
+    expect(isPlaceholder(`sk-proj-${"a1B2c3D4".repeat(18)}riwA`)).toBe(false);
+  });
+
+  it("treats a placeholder as no credential at all", () => {
+    // The failure this guards: loadEnvFile deliberately OVERRIDES the inherited
+    // environment, so a copied placeholder beats a real key and every call 401s
+    // with a credential very obviously present.
+    process.env[KEY] = "sk-proj-...-KEY";
+    expect(hasCredential()).toBe(false);
+    expect(credentialFingerprint()).toMatch(/PLACEHOLDER/);
+
+    process.env[KEY] = `sk-proj-${"x".repeat(140)}riwA`;
+    expect(hasCredential()).toBe(true);
+    expect(credentialFingerprint()).not.toMatch(/PLACEHOLDER/);
+    expect(credentialFingerprint()).toMatch(/ending riwA/);
+    expect(credentialFingerprint()).not.toContain("x".repeat(20));
+  });
+
+  it("reports no credential when the variable is unset", () => {
+    delete process.env[KEY];
+    expect(hasCredential()).toBe(false);
+    expect(credentialFingerprint()).toBe("none");
+  });
+});
+
+describe("loadEnvFile", () => {
+  it("finds the file from a subdirectory, as a workspace script runs", () => {
+    // `npm run start -w @midfunnel/web` has cwd inside the package while .env
+    // lives at the repo root. Resolving only against cwd finds nothing in
+    // exactly the case people run most.
+    const root = mkdtempSync(join(tmpdir(), "envtest-"));
+    const nested = join(root, "packages", "web");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(root, ".env"), "MIDFUNNEL_ENV_PROBE=found-by-walking-up\n");
+
+    const cwd = process.cwd();
+    try {
+      process.chdir(nested);
+      expect(loadEnvFile()).toContain("MIDFUNNEL_ENV_PROBE");
+      expect(process.env.MIDFUNNEL_ENV_PROBE).toBe("found-by-walking-up");
+    } finally {
+      process.chdir(cwd);
+      delete process.env.MIDFUNNEL_ENV_PROBE;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -60,9 +60,10 @@ export async function main(): Promise<void> {
   if (mismatch) console.warn(`[runtime] WARNING: ${mismatch}`);
   if (!credentialled) {
     console.warn(
-      "[runtime] no OPENAI_API_KEY found (checked the environment and .env) - " +
-      "using KeywordExtractor. Results are deterministic but NOT representative " +
-      "of the real agent. Set a credential for genuine replay numbers.",
+      `[runtime] no usable OPENAI_API_KEY (${credentialFingerprint()}) - using ` +
+      "KeywordExtractor and the offline copilot. Results are deterministic and " +
+      "read real data, but are NOT representative of the real agent. Set a " +
+      "credential for genuine numbers.",
     );
   }
   const runtime = credentialled
