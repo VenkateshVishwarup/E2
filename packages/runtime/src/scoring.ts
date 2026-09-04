@@ -4,7 +4,12 @@ export interface Evidence { [field: string]: { value: unknown; confidence: numbe
 
 export interface RouteResult { decision: string; target: string; sla?: string }
 
-export interface PredicateContext { score: number; evidenceComplete: boolean }
+export interface PredicateContext {
+  score: number;
+  evidenceComplete: boolean;
+  /** -1..1. Absent means neutral, so a sentiment rule simply does not fire. */
+  sentiment?: number;
+}
 
 /** Weight keys are `field.value`, or `field.*` for any established value. */
 export function score(spec: JourneySpec, evidence: Evidence): number {
@@ -49,6 +54,19 @@ export function evaluatePredicate(expr: string, ctx: PredicateContext): boolean 
       case ">":  return ctx.score > n;
       case "<":  return ctx.score < n;
       case "==": return ctx.score === n;
+    }
+  }
+
+  const sm = /^sentiment\s*(>=|<=|>|<|==)\s*(-?\d+(?:\.\d+)?)$/.exec(trimmed);
+  if (sm) {
+    const n = Number(sm[2]);
+    const v = ctx.sentiment ?? 0;
+    switch (sm[1]) {
+      case ">=": return v >= n;
+      case "<=": return v <= n;
+      case ">":  return v > n;
+      case "<":  return v < n;
+      case "==": return v === n;
     }
   }
 

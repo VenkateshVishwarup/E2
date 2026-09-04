@@ -3,7 +3,8 @@ import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { LeadState } from "@midfunnel/core/events/types";
 import { EvidenceExtractor, type ExtractedField } from "./extractor.js";
 import { cacheKey, createClient, MAX_TOKENS, MODEL } from "./provider.js";
-import { evidenceComplete, qualifies, route, score, type Evidence } from "./scoring.js";
+import { evaluatePredicate, evidenceComplete, qualifies, route, score, type Evidence } from "./scoring.js";
+import { LexiconSentiment } from "./sentiment.js";
 
 export type Action =
   | { kind: "send"; text: string; pinnedTemplate?: string }
@@ -26,6 +27,7 @@ const HUMAN_REQUEST = /\b(human|agent|person|representative|talk to someone|real
 export class AgentRuntime {
   private readonly extractor: EvidenceExtractor;
   private readonly client: OpenAI;
+  private readonly sentiment = new LexiconSentiment();
 
   constructor(extractor?: EvidenceExtractor, client?: OpenAI) {
     this.client = client ?? createClient();
@@ -62,8 +64,9 @@ export class AgentRuntime {
     if (Object.keys(fresh).length > 0) actions.push({ kind: "extract", evidence: fresh });
     const evidence: Evidence = { ...state.evidence, ...fresh };
 
-    // 4. Declared escalation triggers on evidence.
-    const trigger = escalationTrigger(spec, evidence);
+    // 4. Declared escalation triggers on evidence and sentiment.
+    const mood = this.sentiment.analyze(state.turns);
+    const trigger = escalationTrigger(spec, evidence, mood.score);
     if (trigger) {
       actions.push({ kind: "escalate", reason: trigger });
       return actions;
@@ -153,14 +156,27 @@ function nextField(spec: JourneySpec, evidence: Evidence): string {
   return (required ?? pool[0]!)[0];
 }
 
-function escalationTrigger(spec: JourneySpec, evidence: Evidence): string | null {
-  for (const rule of spec.policy.escalate_when) {
-    const m = /^evidence\.(\w+)\s*==\s*(\S+)$/.exec(rule.trim());
-    // Rules we cannot yet evaluate (e.g. `sentiment < -0.5`) are skipped, not
-    // thrown on: an unimplementable policy rule must not break the runtime.
-    if (!m) continue;
-    const got = evidence[m[1]!];
-    if (got && String(got.value) === m[2]) return rule.trim();
+function escalationTrigger(
+  spec: JourneySpec, evidence: Evidence, sentiment: number,
+): string | null {
+  for (const raw of spec.policy.escalate_when) {
+    const rule = raw.trim();
+
+    const ev = /^evidence\.(\w+)\s*==\s*(\S+)$/.exec(rule);
+    if (ev) {
+      const got = evidence[ev[1]!];
+      if (got && String(got.value) === ev[2]) return rule;
+      continue;
+    }
+
+    if (/^sentiment\s*(>=|<=|>|<|==)/.test(rule)) {
+      if (evaluatePredicate(rule, { score: 0, evidenceComplete: false, sentiment })) {
+        return rule;
+      }
+      continue;
+    }
+    // Rules with no evaluator are skipped, not thrown on: an unimplementable
+    // policy rule must not break the runtime.
   }
   return null;
 }

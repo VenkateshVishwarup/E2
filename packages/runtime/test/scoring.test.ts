@@ -79,3 +79,20 @@ describe("qualifies", () => {
     expect(qualifies(spec, 20, full)).toBe(false);
   });
 });
+
+describe("evaluatePredicate — sentiment", () => {
+  const ctx = (sentiment: number) => ({ score: 0, evidenceComplete: false, sentiment });
+
+  it("evaluates a sentiment comparison", () => {
+    expect(evaluatePredicate("sentiment < -0.5", ctx(-0.8))).toBe(true);
+    expect(evaluatePredicate("sentiment < -0.5", ctx(-0.2))).toBe(false);
+  });
+
+  it("treats missing sentiment as neutral", () => {
+    expect(evaluatePredicate("sentiment < -0.5", { score: 0, evidenceComplete: false })).toBe(false);
+  });
+
+  it("still refuses an unsupported predicate", () => {
+    expect(() => evaluatePredicate("mood == bad", ctx(0))).toThrow(/unsupported predicate/i);
+  });
+});

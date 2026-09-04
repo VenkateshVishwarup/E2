@@ -127,3 +127,23 @@ describe("AgentRuntime.step", () => {
     expect(prompt).not.toContain("budget_band");
   });
 });
+
+describe("AgentRuntime.step — sentiment escalation", () => {
+  it("escalates a frustrated lead on the declared sentiment rule", async () => {
+    const s = state({ turns: [
+      turn("agent", "Which programme?"),
+      turn("lead", "this is terrible, useless, awful — waste of time"),
+    ] });
+    const actions = await new AgentRuntime(extractor(), asker("x") as never).step(spec, s);
+    expect(actions.find((a) => a.kind === "escalate"))
+      .toMatchObject({ reason: "sentiment < -0.5" });
+  });
+
+  it("does not escalate a merely neutral lead", async () => {
+    const s = state({ turns: [turn("agent", "Which programme?"), turn("lead", "executive mba")] });
+    const actions = await new AgentRuntime(
+      extractor(ev({ target_program: "executive_mba" })), asker("next?") as never,
+    ).step(spec, s);
+    expect(actions.some((a) => a.kind === "escalate")).toBe(false);
+  });
+});
