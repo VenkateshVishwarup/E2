@@ -4,6 +4,7 @@
 **Revised:** 2026-09-02 — reconciled against the 2026-09-02 platform orchestration call
 (agent identity, metric definitions, platform seams, conversational rendering)
 **Revised:** 2026-09-04 — model provider switched from Anthropic to OpenAI (§7.3, §17 row 20)
+**Revised:** 2026-09-04 — per-role model profiles: `dev` (terra) for building, `demo` (sol/luna) for the pitch (§8.2, §17 row 22)
 **Status:** Approved for implementation planning
 **Author:** Venkatesh Vishwarup (with Claude)
 
@@ -546,13 +547,22 @@ Two principles, both load-bearing:
 
 | Component | Model | Effort | Reasoning |
 |---|---|---|---|
-| Agent Runtime | `gpt-5.6-sol` | `high` | This is the product. Quality here is the demo |
-| Evidence Extractor | `gpt-5.6-sol` | `low` | Schema-constrained, so low effort suffices — but extraction errors corrupt the event log and every downstream ROI number. Not a place to economise |
-| Replay Engine | `gpt-5.6-sol` | `high` | Must match the runtime exactly. Non-negotiable |
-| Eval / judge | `gpt-5.6-sol` | `high` | Judge ≥ judged |
-| Insight Engine | `gpt-5.6-sol` | `high` | Reasoning quality is the output |
-| Copilot | `gpt-5.6-sol` | `xhigh` | Marketer-facing reasoning; proposes spec diffs |
-| Persona Simulator | `gpt-5.6-terra` | `low` | The one justified downgrade. Personas need *plausibility*, not brilliance, and this is the volume driver — thousands of conversations per run at $2/$12 versus $4/$20 |
+Models are resolved per role from `MODEL_PROFILE`, not hardcoded (`modelFor(role)`
+in `provider.ts`).
+
+| Role | `dev` (default) | `demo` | Effort | Reasoning |
+|---|---|---|---|---|
+| Agent Runtime | `terra` | **`sol`** | `high` | This is the product. Quality here is what an audience judges |
+| Evidence Extractor | `terra` | `terra` | `low` | Schema-constrained, so low effort suffices — but extraction errors corrupt the event log and every downstream ROI number, so never `luna` |
+| Replay Engine | *inherits runtime* | *inherits runtime* | `high` | Must match the runtime exactly or the counterfactual estimates a different system |
+| Eval / judge | `terra` | **`sol`** | `high` | Judge ≥ judged, enforced by `judgeWeakerThanJudged()` at startup |
+| Insight Engine | `terra` | `sol` | `high` | Reasoning quality is the output |
+| Copilot | `terra` | `sol` | `xhigh` | Marketer-facing reasoning; proposes spec diffs |
+| Persona Simulator | `terra` | **`luna`** | `low` | The volume driver — a third of all simulation calls. Personas need *plausibility*, not brilliance |
+
+**Why `dev` is uniform.** An A/B comparison is internally consistent at any
+tier, because both arms run the same model. Building and debugging at `terra`
+costs roughly 40% of `sol` and changes nothing about whether v4 beats v5.
 
 Prices per 1M tokens (input / cached input / output): `gpt-5.6-sol` **$4 / $0.40 / $20** ·
 `gpt-5.6-terra` **$2 / $0.20 / $12** · `gpt-5.6-luna` **$0.20 / $0.02 / $1.20** ·
@@ -568,6 +578,15 @@ Sonnet 5 — $2 / $10 · Haiku 4.5 — $1 / $5.
 - **Batch API for replay and simulation — 50% off.** Neither is latency-sensitive; both run
   as overnight jobs
 - **Prompt caching on the journey-spec prefix.** Most of the input cost across a run
+- **Reasoning effort is the real lever, not caching.** Measured on the reference journey:
+  one extraction call costs ~$0.0003 in cached input against ~$0.007 in output. Output is
+  ~25× the input, so turning prefix caching off entirely raises a 500-persona run by only
+  **10%**. Halving `reasoning.effort` roughly halves the bill. Cache ordering is still worth
+  keeping — it is just not where the money is
+- **Measured costs** (batch, 500 personas): `sol` ~$32 · `terra` ~$19 · `luna` ~$1.90.
+  A 10,000-lead replay: `sol` ~$38 · `terra` ~$23. The `demo` profile mix lands a
+  500-persona run around $8–12. **Reasoning-token volume is assumed, not measured** —
+  the band is ±2× until a real run reports `usage`
 - **Next lever if simulation volume dominates:** `gpt-5.6-luna` for personas, at $0.20/$1.20
   — a 10× cut on the volume driver. Noted rather
   than pre-applied, to avoid degrading persona realism before it is a measured problem
@@ -963,6 +982,7 @@ month three.
 | 18 | **Platform layers treated as ports**, not decided | Shared-vs-separate is explicitly unresolved upstream; ports make that survivable instead of blocking | Picking a side and rebuilding when the platform decides differently |
 | 19 | Eval harness **is** the data-quality validator | Validating against observed outcomes is ground truth; a second LLM with no ground truth measures correlation, not correctness | The proposed secondary-LLM validator pattern |
 | 20 | **OpenAI `gpt-5.6-sol`** as the model provider | Owner's decision (2026-09-04). Slightly cheaper than the Anthropic tier it replaces ($4/$20 vs $5/$25) with a 10× cached-input discount. The `step()` and `extract()` contracts did not change, so the swap touched one module — the first real test of the replaceable-runtime property in §5.4 | Anthropic Claude, as originally specified |
+| 22 | **`dev` profile (terra) for all building, debugging and A/B; `demo` (sol + luna) only for the pitch** | Owner's decision (2026-09-04). A comparison is internally consistent at any tier, so iterating at 40% of the cost changes no conclusion. Upgrading only the agent and the judge puts spend where an audience actually looks | One model everywhere, chosen once |
 | 21 | Accept weaker cache **guarantees** for automatic caching | No explicit breakpoint exists on the Responses API. Prefix ordering now carries the whole burden, and hit rate becomes a measured number rather than an asserted one. Judged an acceptable trade for the price difference — but it is a real loss, recorded in §7.3 | Keeping explicit `cache_control` breakpoints (would have meant staying on Anthropic) |
 
 ---
