@@ -37,6 +37,7 @@ beforeEach(async () => {
     registry,
     store: new EventStore(pool, "t1"),
     replay: { replay: vi.fn().mockResolvedValue(LIFT) } as never,
+    simulate: { run: vi.fn(), compare: vi.fn() } as never,
   });
 });
 afterAll(async () => { await pool.end(); });

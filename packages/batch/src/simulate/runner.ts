@@ -5,6 +5,15 @@ import type { AgentRuntime } from "@midfunnel/runtime/step";
 import type { Persona } from "./persona.js";
 import type { Replier } from "./replier.js";
 
+export interface LeadOutcome {
+  leadId: string;
+  personaId: string;
+  /** ghosted and exhausted are indistinguishable from the event log alone, so
+   *  the runner reports them rather than leaving consumers to guess. */
+  outcome: "completed" | "escalated" | "ghosted" | "exhausted";
+  qualified: boolean;
+}
+
 export interface RunSummary {
   runId: string;
   journey: string;
@@ -15,6 +24,7 @@ export interface RunSummary {
   escalated: number;
   ghosted: number;
   avgTurns: number;
+  results: LeadOutcome[];
 }
 
 export interface RunOptions {
@@ -50,6 +60,7 @@ export class SimulationRunner {
     const agentId = opts.agentId ?? spec.agent.identity;
 
     let completed = 0, qualified = 0, escalated = 0, ghosted = 0, turnTotal = 0;
+    const results: LeadOutcome[] = [];
 
     for (const persona of personas) {
       const leadId = `sim_${runId}_${persona.id}`;
@@ -65,12 +76,22 @@ export class SimulationRunner {
       if (outcome.escalated) escalated++;
       else if (outcome.ghosted) ghosted++;
       else if (outcome.completed) { completed++; if (outcome.qualified) qualified++; }
+
+      results.push({
+        leadId, personaId: persona.id,
+        outcome: outcome.escalated ? "escalated"
+               : outcome.ghosted ? "ghosted"
+               : outcome.completed ? "completed"
+               : "exhausted",
+        qualified: outcome.qualified,
+      });
     }
 
     return {
       runId, journey: spec.journey, journeyVersion: spec.version,
       n: personas.length, completed, qualified, escalated, ghosted,
       avgTurns: personas.length ? Math.round((turnTotal / personas.length) * 10) / 10 : 0,
+      results,
     };
   }
 

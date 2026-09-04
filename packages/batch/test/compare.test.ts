@@ -38,7 +38,7 @@ const arm = (target: string, cards: Scorecard[]): ArmResult => ({
     runId: target, journey: "j", journeyVersion: 4, n: cards.length,
     completed: cards.filter((c) => c.outcome === "completed").length,
     qualified: cards.filter((c) => c.qualified).length,
-    escalated: 0, ghosted: 0, avgTurns: 4,
+    escalated: 0, ghosted: 0, avgTurns: 4, results: [],
   },
   quality: aggregate(cards),
 });

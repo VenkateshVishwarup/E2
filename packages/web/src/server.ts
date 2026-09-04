@@ -6,9 +6,13 @@ import { AgentRuntime } from "@midfunnel/runtime/step";
 import { KeywordExtractor } from "@midfunnel/runtime/keyword-extractor";
 import { loadEnvFile } from "@midfunnel/runtime/provider";
 import { ReplayEngine } from "@midfunnel/batch/replay/engine";
-import { registerRoutes, type ServerDeps } from "./routes/replay.js";
+import { registerRoutes } from "./routes/replay.js";
+import { registerSimulateRoutes } from "./routes/simulate.js";
+import { LiveSimulationService, chooseReplier } from "./simulation-service.js";
+import type { ServerDeps } from "./deps.js";
 
 export type { ServerDeps };
+export * from "./deps.js";
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -16,6 +20,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     reply.header("access-control-allow-origin", "*");
   });
   registerRoutes(app, deps);
+  registerSimulateRoutes(app, deps);
   return app;
 }
 
@@ -53,8 +58,12 @@ export async function main(): Promise<void> {
     : new AgentRuntime(new KeywordExtractor() as never, {} as never);
   const replay = new ReplayEngine(events, registry, runtime);
 
+  const simulate = new LiveSimulationService(
+    pool, tenantId, registry, runtime, chooseReplier(hasCredential),
+  );
+
   if (role === "web" || role === "all") {
-    const app = buildServer({ registry, store: events, replay });
+    const app = buildServer({ registry, store: events, replay, simulate });
     const port = Number(process.env.PORT ?? 3000);
     await app.listen({ port, host: "0.0.0.0" });
     console.log(`[${role}] listening on :${port}`);

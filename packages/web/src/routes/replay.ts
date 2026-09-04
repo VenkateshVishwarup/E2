@@ -1,13 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { EventStore } from "@midfunnel/core/events/store";
-import type { JourneyRegistry } from "@midfunnel/core/journey/registry";
-import type { ReplayEngine } from "@midfunnel/batch/replay/engine";
-
-export interface ServerDeps {
-  registry: JourneyRegistry;
-  store: EventStore;
-  replay: ReplayEngine;
-}
+import { statusFor, type ServerDeps } from "../deps.js";
 
 export function registerRoutes(app: FastifyInstance, deps: ServerDeps): void {
   app.get("/health", async () => ({ ok: true }));
@@ -51,13 +43,4 @@ export function registerRoutes(app: FastifyInstance, deps: ServerDeps): void {
       }
     },
   );
-}
-
-/**
- * A missing journey is a 404; anything else (a failing model call, a database
- * error) is an upstream failure. Collapsing both into 404 hides the cause -
- * an auth failure should never read as "not found".
- */
-function statusFor(err: unknown): number {
-  return /not found/i.test((err as Error).message) ? 404 : 502;
 }

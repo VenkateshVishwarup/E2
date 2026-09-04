@@ -66,3 +66,25 @@ thead tr { border-bottom: 1px solid var(--line); }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .scroll { overflow-x: auto; }
 .err { color: var(--danger); }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 20px 0 24px; }
+.tab {
+  padding: 8px 14px; border: 0; background: none; color: var(--muted);
+  font: inherit; cursor: pointer; border-bottom: 2px solid transparent;
+}
+.tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--fg); }
+.tab:disabled { opacity: .5; cursor: default; }
+.btn {
+  padding: 8px 14px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card); color: var(--fg); font: inherit; cursor: pointer;
+}
+.btn:disabled { opacity: .5; cursor: default; }
+.alert { border-radius: 8px; padding: 12px 14px; margin: 8px 0; border: 1px solid; }
+.alert.warn { border-color: var(--modelled); color: var(--modelled); }
+.alert.critical { border-color: var(--danger); color: var(--danger); }
+.ok { color: var(--observed); }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.metric { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: var(--card); }
+.metric-label { color: var(--muted); font-size: 12px; }
+.metric-value { font-size: 22px; font-variant-numeric: tabular-nums; }
+.verdict { font-size: 18px; margin: 16px 0 4px; }

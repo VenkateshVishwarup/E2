@@ -111,6 +111,24 @@ describe("SimulationRunner", () => {
     const b = await new SimulationRunner(sim, runtime(), new ScriptedReplier())
       .run(spec, personas, { runId: "run_b" });
 
-    expect({ ...a, runId: null }).toEqual({ ...b, runId: null });
+    // leadId embeds the runId by design, so compare the run-independent parts.
+    const stable = (s: typeof a) => ({
+      ...s,
+      runId: null,
+      results: s.results.map(({ personaId, outcome, qualified }) =>
+        ({ personaId, outcome, qualified })),
+    });
+    expect(stable(a)).toEqual(stable(b));
+  });
+
+  it("reports a per-lead outcome for every persona", async () => {
+    // ghosted and exhausted are indistinguishable from the event log alone, so
+    // the runner has to report them for scorecards to classify correctly.
+    const s = await new SimulationRunner(sim, runtime(), new ScriptedReplier())
+      .run(spec, generatePersonas(spec, 8, 17), { runId: "run_o" });
+    expect(s.results).toHaveLength(8);
+    expect(s.results.every((r) => r.leadId.startsWith("sim_run_o_"))).toBe(true);
+    expect(s.results.filter((r) => r.outcome === "completed").length).toBe(s.completed);
+    expect(s.results.filter((r) => r.outcome === "escalated").length).toBe(s.escalated);
   });
 });
