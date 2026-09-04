@@ -13,7 +13,7 @@
     "db:migrate": "tsx packages/core/src/db/migrate.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/runtime/tsconfig.json && tsc --noEmit -p packages/batch/tsconfig.json && tsc --noEmit -p packages/web/tsconfig.json && tsc --noEmit -p packages/console/tsconfig.json",
+    "typecheck": "tsc --noEmit -p packages/core/tsconfig.json && tsc --noEmit -p packages/runtime/tsconfig.json && tsc --noEmit -p packages/batch/tsconfig.json && tsc --noEmit -p packages/intelligence/tsconfig.json && tsc --noEmit -p packages/web/tsconfig.json && tsc --noEmit -p packages/console/tsconfig.json",
     "seed": "tsx scripts/seed-and-replay.ts",
     "simulate": "tsx scripts/simulate-and-eval.ts",
     "simulate:demo": "MODEL_PROFILE=demo tsx scripts/simulate-and-eval.ts"

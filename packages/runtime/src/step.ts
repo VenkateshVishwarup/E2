@@ -3,6 +3,7 @@ import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { LeadState } from "@midfunnel/core/events/types";
 import { EvidenceExtractor, type ExtractedField } from "./extractor.js";
 import { cacheKey, createClient, MAX_TOKENS, modelFor } from "./provider.js";
+import { CostMeter } from "./meter.js";
 import { evaluatePredicate, evidenceComplete, qualifies, route, score, type Evidence } from "./scoring.js";
 import { LexiconSentiment } from "./sentiment.js";
 
@@ -28,10 +29,12 @@ export class AgentRuntime {
   private readonly extractor: EvidenceExtractor;
   private readonly client: OpenAI;
   private readonly sentiment = new LexiconSentiment();
+  /** Token spend for the conversation currently being stepped. */
+  readonly meter = new CostMeter();
 
   constructor(extractor?: EvidenceExtractor, client?: OpenAI) {
     this.client = client ?? createClient();
-    this.extractor = extractor ?? new EvidenceExtractor(this.client);
+    this.extractor = extractor ?? new EvidenceExtractor(this.client, this.meter);
   }
 
   /**
@@ -108,8 +111,9 @@ export class AgentRuntime {
     const transcript = state.turns.map((t) =>
       `${t.role === "agent" ? "AGENT" : "LEAD"}: ${t.text}`).join("\n");
 
+    const model = modelFor("runtime");
     const response = await this.client.responses.create({
-      model: modelFor("runtime"),
+      model,
       max_output_tokens: MAX_TOKENS,
       reasoning: { effort: "high" },
       instructions: [
@@ -131,6 +135,8 @@ export class AgentRuntime {
         ask_about: { field, type: def.type, description: def.description ?? null },
       }, null, 2),
     });
+
+    this.meter.record(model, response.usage);
 
     const text = response.output_text.trim();
     if (!text) throw new Error("runtime received no text content from the model");

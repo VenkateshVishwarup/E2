@@ -4,13 +4,14 @@ import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { Turn } from "@midfunnel/core/events/types";
 import { evidenceToZod } from "./evidence-schema.js";
 import { cacheKey, createClient, MAX_TOKENS, modelFor } from "./provider.js";
+import type { CostMeter } from "./meter.js";
 
 export interface ExtractedField { value: unknown; confidence: number }
 
 export class EvidenceExtractor {
   private readonly client: OpenAI;
 
-  constructor(client?: OpenAI) {
+  constructor(client?: OpenAI, private readonly meter?: CostMeter) {
     this.client = client ?? createClient();
   }
 
@@ -26,8 +27,9 @@ export class EvidenceExtractor {
       .map((t) => `${t.role === "agent" ? "AGENT" : "LEAD"}: ${t.text}`)
       .join("\n");
 
+    const model = modelFor("extractor");
     const response = await this.client.responses.parse({
-      model: modelFor("extractor"),
+      model,
       max_output_tokens: MAX_TOKENS,
       // Schema-constrained work: the schema does the heavy lifting, so low
       // effort is sufficient and this runs on every turn of every conversation.
@@ -39,6 +41,8 @@ export class EvidenceExtractor {
       text: { format: zodTextFormat(schema, "evidence") },
       input: `TRANSCRIPT\n\n${transcript}`,
     });
+
+    this.meter?.record(model, response.usage);
 
     const parsed = response.output_parsed as Record<string, ExtractedField> | null;
     if (!parsed) throw new Error("extractor received no structured output from the model");

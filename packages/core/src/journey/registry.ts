@@ -61,6 +61,12 @@ export class JourneyRegistry {
     return rows.map((r) => Number(r.version));
   }
 
+  async latest(journey: string): Promise<JourneySpec> {
+    const versions = await this.list(journey);
+    if (versions.length === 0) throw new Error(`journey not found: ${journey}`);
+    return this.get(journey, versions[0]!);
+  }
+
   /**
    * A characterisable diff. This is what makes A/B meaningful — you can
    * attribute lift to "added decision_maker to required", which is impossible

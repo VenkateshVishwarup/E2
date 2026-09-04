@@ -1,5 +1,6 @@
 export * from "./broker.js";
 export * from "./provider.js";
+export * from "./meter.js";
 export * from "./evidence-schema.js";
 export * from "./extractor.js";
 export * from "./keyword-extractor.js";

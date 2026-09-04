@@ -19,10 +19,64 @@ export const MODELS = {
 
 export type Tier = keyof typeof MODELS;
 
+/**
+ * USD per token, so a cost is a multiplication rather than a unit conversion
+ * at each call site. Kept beside the ids because a price that drifts from the
+ * model it prices is worse than no price at all.
+ */
+export const PRICES: Record<string, { input: number; cachedInput: number; output: number }> = {
+  [MODELS.astra]: { input: 10 / 1e6, cachedInput: 1.0 / 1e6, output: 50 / 1e6 },
+  [MODELS.sol]:   { input:  4 / 1e6, cachedInput: 0.40 / 1e6, output: 20 / 1e6 },
+  [MODELS.terra]: { input:  2 / 1e6, cachedInput: 0.20 / 1e6, output: 12 / 1e6 },
+  [MODELS.luna]:  { input: 0.20 / 1e6, cachedInput: 0.02 / 1e6, output: 1.20 / 1e6 },
+};
+
+/** The subset of the Responses API usage object that costing needs. */
+export interface TokenUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  input_tokens_details?: { cached_tokens?: number };
+  output_tokens_details?: { reasoning_tokens?: number };
+}
+
+export interface CallCost {
+  model: string;
+  inputTokens: number;
+  cachedTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  usd: number;
+  /** False when the model id carries no published price, so totals stay honest. */
+  priced: boolean;
+}
+
+/**
+ * Reasoning tokens are billed as output and are the dominant term — on a real
+ * extraction call output ran ~25x input, which is why reasoning effort, not
+ * prompt caching, is the cost lever worth tuning.
+ */
+export function costOf(model: string, usage: TokenUsage | undefined): CallCost {
+  const input = usage?.input_tokens ?? 0;
+  const cached = usage?.input_tokens_details?.cached_tokens ?? 0;
+  const output = usage?.output_tokens ?? 0;
+  const reasoning = usage?.output_tokens_details?.reasoning_tokens ?? 0;
+  const p = PRICES[model];
+
+  return {
+    model,
+    inputTokens: input,
+    cachedTokens: cached,
+    outputTokens: output,
+    reasoningTokens: reasoning,
+    usd: p ? (input - cached) * p.input + cached * p.cachedInput + output * p.output : 0,
+    priced: Boolean(p),
+  };
+}
+
 /** Ascending capability. Used to enforce that a judge is never weaker. */
 const STRENGTH: Record<Tier, number> = { luna: 1, terra: 2, sol: 3, astra: 4 };
 
-export type Role = "runtime" | "extractor" | "judge" | "persona";
+export type Role = "runtime" | "extractor" | "judge" | "persona" | "insights" | "copilot";
 
 /**
  * `dev` is the default: terra everywhere while building, debugging and
@@ -35,8 +89,10 @@ export type Role = "runtime" | "extractor" | "judge" | "persona";
  * the volume driver and needs plausibility rather than brilliance.
  */
 export const PROFILES: Record<string, Record<Role, Tier>> = {
-  dev:  { runtime: "terra", extractor: "terra", judge: "terra", persona: "terra" },
-  demo: { runtime: "sol",   extractor: "terra", judge: "sol",   persona: "luna" },
+  dev:  { runtime: "terra", extractor: "terra", judge: "terra", persona: "terra",
+          insights: "terra", copilot: "terra" },
+  demo: { runtime: "sol",   extractor: "terra", judge: "sol",   persona: "luna",
+          insights: "sol",   copilot: "sol" },
 };
 
 const ROLE_ENV: Record<Role, string> = {
@@ -44,6 +100,8 @@ const ROLE_ENV: Record<Role, string> = {
   extractor: "MODEL_EXTRACTOR",
   judge: "MODEL_JUDGE",
   persona: "MODEL_PERSONA",
+  insights: "MODEL_INSIGHTS",
+  copilot: "MODEL_COPILOT",
 };
 
 export function activeProfile(): string {
@@ -80,7 +138,7 @@ export function judgeWeakerThanJudged(): string | null {
 
 /** Human-readable summary for startup logging. */
 export function describeModels(): string {
-  const roles: Role[] = ["runtime", "extractor", "judge", "persona"];
+  const roles: Role[] = ["runtime", "extractor", "judge", "persona", "insights", "copilot"];
   return `profile=${activeProfile()} ` +
     roles.map((r) => `${r}=${modelFor(r)}`).join(" ");
 }
