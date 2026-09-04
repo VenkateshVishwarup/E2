@@ -48,3 +48,36 @@ export function bootstrapDiffCI(
 }
 
 const round4 = (v: number) => Math.round(v * 10000) / 10000;
+
+/**
+ * Unpaired two-sample bootstrap on the difference in proportions (b - a).
+ *
+ * Distinct from `bootstrapDiffCI` and NOT interchangeable with it. Replay
+ * compares the same leads through two journey versions, so the arms are paired
+ * and the pairing must be preserved or the interval overstates uncertainty.
+ * A cohort comparison — Bangalore against everyone else — is two disjoint
+ * groups of different sizes, where pairing is not merely unnecessary but
+ * meaningless. Each arm is therefore resampled independently.
+ */
+export function bootstrapUnpairedDiffCI(
+  a: boolean[], b: boolean[], opts: BootstrapOptions = {},
+): [number, number] {
+  if (a.length === 0 || b.length === 0) return [0, 0];
+
+  const { iterations = 2000, alpha = 0.05, seed = 1 } = opts;
+  const rand = mulberry32(seed);
+  const diffs: number[] = [];
+
+  for (let i = 0; i < iterations; i++) {
+    let sa = 0, sb = 0;
+    for (let j = 0; j < a.length; j++) if (a[Math.floor(rand() * a.length)]) sa++;
+    for (let j = 0; j < b.length; j++) if (b[Math.floor(rand() * b.length)]) sb++;
+    diffs.push(sb / b.length - sa / a.length);
+  }
+
+  diffs.sort((x, y) => x - y);
+  return [
+    round4(diffs[Math.floor((alpha / 2) * iterations)]!),
+    round4(diffs[Math.min(iterations - 1, Math.floor((1 - alpha / 2) * iterations))]!),
+  ];
+}

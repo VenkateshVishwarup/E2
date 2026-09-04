@@ -1,4 +1,4 @@
-import { bootstrapDiffCI } from "../replay/stats.js";
+import { bootstrapDiffCI } from "@midfunnel/core/stats/bootstrap";
 import type { RunQuality } from "../eval/alerts.js";
 import type { Scorecard } from "../eval/scorecard.js";
 import type { RunSummary } from "../simulate/runner.js";

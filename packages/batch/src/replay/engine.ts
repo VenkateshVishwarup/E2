@@ -3,7 +3,7 @@ import type { JourneyRegistry } from "@midfunnel/core/journey/registry";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { LeadState } from "@midfunnel/core/events/types";
 import type { AgentRuntime } from "@midfunnel/runtime/step";
-import { bootstrapDiffCI } from "./stats.js";
+import { bootstrapDiffCI } from "@midfunnel/core/stats/bootstrap";
 
 export interface ReplayOutcome {
   leadId: string;

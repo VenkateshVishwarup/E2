@@ -1,5 +1,5 @@
 import { parseTypeExpr, type JourneySpec } from "@midfunnel/core/journey/spec";
-import { mulberry32 } from "../replay/stats.js";
+import { mulberry32 } from "@midfunnel/core/stats/bootstrap";
 
 export interface Persona {
   id: string;

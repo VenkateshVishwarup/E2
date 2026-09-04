@@ -6,3 +6,4 @@ export * from "./journey/spec.js";
 export * from "./journey/registry.js";
 export * from "./agent/registry.js";
 export * from "./metrics/predicate.js";
+export * from "./stats/bootstrap.js";
