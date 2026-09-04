@@ -1,5 +1,6 @@
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { parseMetric, type MetricAst } from "../metrics/predicate.js";
 
 export type TypeExpr =
   | { kind: "enum"; values: string[] }
@@ -151,7 +152,12 @@ export function evidenceToJsonSchema(spec: JourneySpec): Record<string, unknown>
 }
 
 export interface SpecWarning {
-  code: "unreachable_qualification" | "unknown_scoring_field" | "unreachable_weight";
+  code:
+    | "unreachable_qualification"
+    | "unknown_scoring_field"
+    | "unreachable_weight"
+    | "unparseable_metric"
+    | "unreachable_metric";
   message: string;
 }
 
@@ -200,7 +206,51 @@ export function lintSpec(spec: JourneySpec): SpecWarning[] {
         `fields are complete: ${optional.join(", ") || "none"}. This journey cannot qualify anyone.`,
     });
   }
+  warnings.push(...lintMetrics(spec));
   return warnings;
+}
+
+/**
+ * A metric is a promise to a customer about what the invoice will say, so a
+ * metric that can never be true is worse than a missing one: it reports zero
+ * forever and looks like poor performance rather than a broken definition.
+ */
+function lintMetrics(spec: JourneySpec): SpecWarning[] {
+  const warnings: SpecWarning[] = [];
+  const targets = Object.values(spec.routing).map((r) => r.target);
+
+  for (const [name, expr] of Object.entries(spec.metrics)) {
+    let ast: MetricAst;
+    try {
+      ast = parseMetric(expr);
+    } catch (err) {
+      warnings.push({
+        code: "unparseable_metric",
+        message: `metric "${name}" cannot be parsed: ${(err as Error).message}`,
+      });
+      continue;
+    }
+
+    // `HandoffCreated` is only ever written by a routing target in the
+    // `handoff.*` family, so a journey with no such target can never book.
+    for (const type of eventTypesIn(ast)) {
+      if (type === "HandoffCreated" && !targets.some((t) => t.startsWith("handoff."))) {
+        warnings.push({
+          code: "unreachable_metric",
+          message:
+            `metric "${name}" depends on HandoffCreated, but no routing rule targets ` +
+            `a handoff (targets: ${targets.join(", ")}). It will always report zero.`,
+        });
+      }
+    }
+  }
+  return warnings;
+}
+
+function eventTypesIn(ast: MetricAst): string[] {
+  return ast.kind === "and" || ast.kind === "or"
+    ? [...eventTypesIn(ast.left), ...eventTypesIn(ast.right)]
+    : [ast.type];
 }
 
 /** Extracts N from a `score >= N` atom, if the predicate contains one. */
