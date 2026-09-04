@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
-    "start:offline": "OPENAI_API_KEY= tsx src/main.ts"
+    "start:offline": "OPENAI_API_KEY= tsx src/main.ts",
+    "start:demo": "MODEL_PROFILE=demo tsx src/main.ts"
   },
   "dependencies": {
     "@midfunnel/core": "*",

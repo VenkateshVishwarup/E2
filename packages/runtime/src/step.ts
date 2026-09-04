@@ -2,7 +2,7 @@ import type OpenAI from "openai";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { LeadState } from "@midfunnel/core/events/types";
 import { EvidenceExtractor, type ExtractedField } from "./extractor.js";
-import { cacheKey, createClient, MAX_TOKENS, MODEL } from "./provider.js";
+import { cacheKey, createClient, MAX_TOKENS, modelFor } from "./provider.js";
 import { evaluatePredicate, evidenceComplete, qualifies, route, score, type Evidence } from "./scoring.js";
 import { LexiconSentiment } from "./sentiment.js";
 
@@ -109,7 +109,7 @@ export class AgentRuntime {
       `${t.role === "agent" ? "AGENT" : "LEAD"}: ${t.text}`).join("\n");
 
     const response = await this.client.responses.create({
-      model: MODEL,
+      model: modelFor("runtime"),
       max_output_tokens: MAX_TOKENS,
       reasoning: { effort: "high" },
       instructions: [

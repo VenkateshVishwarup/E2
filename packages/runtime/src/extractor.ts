@@ -3,7 +3,7 @@ import { zodTextFormat } from "openai/helpers/zod";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { Turn } from "@midfunnel/core/events/types";
 import { evidenceToZod } from "./evidence-schema.js";
-import { cacheKey, createClient, MAX_TOKENS, MODEL } from "./provider.js";
+import { cacheKey, createClient, MAX_TOKENS, modelFor } from "./provider.js";
 
 export interface ExtractedField { value: unknown; confidence: number }
 
@@ -27,7 +27,7 @@ export class EvidenceExtractor {
       .join("\n");
 
     const response = await this.client.responses.parse({
-      model: MODEL,
+      model: modelFor("extractor"),
       max_output_tokens: MAX_TOKENS,
       // Schema-constrained work: the schema does the heavy lifting, so low
       // effort is sufficient and this runs on every turn of every conversation.

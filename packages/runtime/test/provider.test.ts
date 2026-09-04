@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { credentialFingerprint, loadEnvFile } from "../src/provider.js";
+import { activeProfile, credentialFingerprint, describeModels, judgeWeakerThanJudged, loadEnvFile, modelFor } from "../src/provider.js";
 
 let dir: string;
 const saved = process.env.OPENAI_API_KEY;
@@ -76,5 +76,75 @@ describe("loadEnvFile", () => {
     writeFileSync(without, "MF_PROBE=x\n");
     loadEnvFile(without);
     expect(credentialFingerprint()).toContain("inherited environment");
+  });
+});
+
+describe("model profiles", () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    for (const k of ["MODEL_PROFILE","MODEL_RUNTIME","MODEL_EXTRACTOR","MODEL_JUDGE","MODEL_PERSONA"]) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k]!;
+    }
+  });
+
+  it("defaults to dev: terra everywhere while building", () => {
+    delete process.env.MODEL_PROFILE;
+    expect(activeProfile()).toBe("dev");
+    for (const r of ["runtime","extractor","judge","persona"] as const) {
+      expect(modelFor(r)).toBe("gpt-5.6-terra");
+    }
+  });
+
+  it("demo profile upgrades what an audience judges and cheapens the volume", () => {
+    process.env.MODEL_PROFILE = "demo";
+    expect(modelFor("runtime")).toBe("gpt-5.6-sol");
+    expect(modelFor("judge")).toBe("gpt-5.6-sol");
+    expect(modelFor("persona")).toBe("gpt-5.6-luna");
+    // Extraction stays mid-tier: schema-constrained, but errors corrupt every
+    // downstream number, so it is not dropped to luna.
+    expect(modelFor("extractor")).toBe("gpt-5.6-terra");
+  });
+
+  it("falls back to dev for an unknown profile rather than failing to start", () => {
+    process.env.MODEL_PROFILE = "nonsense";
+    expect(activeProfile()).toBe("dev");
+    expect(modelFor("runtime")).toBe("gpt-5.6-terra");
+  });
+
+  it("lets a single role be overridden without changing the profile", () => {
+    process.env.MODEL_PROFILE = "dev";
+    process.env.MODEL_JUDGE = "gpt-6-astra";
+    expect(modelFor("judge")).toBe("gpt-6-astra");
+    expect(modelFor("runtime")).toBe("gpt-5.6-terra");
+  });
+
+  it("stays silent when the judge is at least as strong as the runtime", () => {
+    process.env.MODEL_PROFILE = "dev";
+    expect(judgeWeakerThanJudged()).toBeNull();
+    process.env.MODEL_PROFILE = "demo";
+    expect(judgeWeakerThanJudged()).toBeNull();
+  });
+
+  it("warns when the judge is weaker than the runtime it scores", () => {
+    // The failure this guards: eval results would measure the judge, not the
+    // agent, and the numbers would look fine while meaning nothing.
+    process.env.MODEL_RUNTIME = "gpt-5.6-sol";
+    process.env.MODEL_JUDGE = "gpt-5.6-luna";
+    expect(judgeWeakerThanJudged()).toMatch(/weaker than the runtime/i);
+  });
+
+  it("does not warn about an unrecognised custom model id", () => {
+    process.env.MODEL_RUNTIME = "some-finetune-v3";
+    process.env.MODEL_JUDGE = "gpt-5.6-luna";
+    expect(judgeWeakerThanJudged()).toBeNull();
+  });
+
+  it("summarises the resolved models for startup logging", () => {
+    process.env.MODEL_PROFILE = "demo";
+    const d = describeModels();
+    expect(d).toContain("profile=demo");
+    expect(d).toContain("runtime=gpt-5.6-sol");
+    expect(d).toContain("persona=gpt-5.6-luna");
   });
 });

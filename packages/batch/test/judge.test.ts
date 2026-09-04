@@ -38,14 +38,15 @@ describe("ConversationJudge", () => {
     expect(j.policyBreaches).toEqual([]);
   });
 
-  it("judges with the flagship model at high effort", async () => {
+  it("judges at high effort with the profile's judge model", async () => {
     const client = fake(VERDICT);
     await new ConversationJudge(client as never).judge(spec, state, card);
     const req = client.responses.parse.mock.calls[0]![0] as {
       model: string; reasoning: { effort: string };
     };
-    // The judge must never be weaker than the judged.
-    expect(req.model).toBe("gpt-5.6-sol");
+    // dev profile: terra everywhere. The judge-strength invariant is enforced
+    // separately in provider.test.ts, not by pinning an id here.
+    expect(req.model).toBe("gpt-5.6-terra");
     expect(req.reasoning.effort).toBe("high");
   });
 

@@ -57,7 +57,8 @@ describe("EvidenceExtractor", () => {
       reasoning: { effort: string };
       input: string;
     };
-    expect(req.model).toBe("gpt-5.6-sol");
+    // dev profile is the default while building.
+    expect(req.model).toBe("gpt-5.6-terra");
     expect(req.reasoning.effort).toBe("low");
     // Prefix caching is automatic and prefix-matched, so the spec must sit in
     // `instructions` and the volatile transcript only in `input`.

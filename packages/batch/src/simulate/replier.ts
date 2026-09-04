@@ -1,7 +1,7 @@
 import type OpenAI from "openai";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { Turn } from "@midfunnel/core/events/types";
-import { cacheKey, createClient, MAX_TOKENS, PERSONA_MODEL } from "@midfunnel/runtime/provider";
+import { cacheKey, createClient, MAX_TOKENS, modelFor } from "@midfunnel/runtime/provider";
 import type { Persona } from "./persona.js";
 
 export interface Replier {
@@ -110,7 +110,7 @@ export class ModelReplier implements Replier {
       .join("\n");
 
     const response = await this.client.responses.create({
-      model: PERSONA_MODEL,
+      model: modelFor("persona"),
       max_output_tokens: MAX_TOKENS,
       reasoning: { effort: "low" },
       prompt_cache_key: `persona:${cacheKey(spec.journey, spec.version)}`,

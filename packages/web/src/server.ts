@@ -5,7 +5,7 @@ import { JourneyRegistry } from "@midfunnel/core/journey/registry";
 import { AgentRuntime } from "@midfunnel/runtime/step";
 import { KeywordExtractor } from "@midfunnel/runtime/keyword-extractor";
 import { offlineClient } from "@midfunnel/runtime/offline-client";
-import { credentialFingerprint, loadEnvFile } from "@midfunnel/runtime/provider";
+import { credentialFingerprint, describeModels, judgeWeakerThanJudged, loadEnvFile } from "@midfunnel/runtime/provider";
 import { ReplayEngine } from "@midfunnel/batch/replay/engine";
 import { registerRoutes } from "./routes/replay.js";
 import { registerSimulateRoutes } from "./routes/simulate.js";
@@ -48,6 +48,9 @@ export async function main(): Promise<void> {
   // runtime's.
   const hasCredential = Boolean(process.env.OPENAI_API_KEY);
   console.log(`[runtime] credential: ${credentialFingerprint()}`);
+  console.log(`[runtime] models: ${describeModels()}`);
+  const mismatch = judgeWeakerThanJudged();
+  if (mismatch) console.warn(`[runtime] WARNING: ${mismatch}`);
   if (!hasCredential) {
     console.warn(
       "[runtime] no OPENAI_API_KEY found (checked the environment and .env) - " +

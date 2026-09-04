@@ -3,7 +3,7 @@ import { zodTextFormat } from "openai/helpers/zod";
 import * as z from "zod/v4";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { LeadState } from "@midfunnel/core/events/types";
-import { cacheKey, createClient, MAX_TOKENS, MODEL } from "@midfunnel/runtime/provider";
+import { cacheKey, createClient, MAX_TOKENS, modelFor } from "@midfunnel/runtime/provider";
 import { undetectableRules, type Scorecard } from "./scorecard.js";
 
 export interface Judgement {
@@ -47,7 +47,7 @@ export class ConversationJudge {
       .join("\n");
 
     const response = await this.client.responses.parse({
-      model: MODEL,
+      model: modelFor("judge"),
       max_output_tokens: MAX_TOKENS,
       // The judge must never be weaker than the judged.
       reasoning: { effort: "high" },

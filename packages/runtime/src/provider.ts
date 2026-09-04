@@ -4,17 +4,87 @@ import OpenAI from "openai";
 /**
  * Exact model ids. Never invent a variant or append a suffix.
  *
- * gpt-5.6-sol  $4 / $0.40 cached / $20 per 1M — runtime, extraction, judging.
- * gpt-5.6-terra $2 / $0.20 cached / $12 per 1M — persona simulation only, the
- *   one justified downgrade: personas need plausibility, not brilliance, and
- *   they are the volume driver in a simulation run.
- *
- * gpt-6-astra exists and is stronger, at $10/$50. Not the default: the judge
- * only has to be at least as strong as the thing it judges, and if both are
- * sol that holds.
+ * Prices per 1M tokens (input / cached input / output):
+ *   gpt-6-astra    $10 / $1.00 / $50
+ *   gpt-5.6-sol     $4 / $0.40 / $20
+ *   gpt-5.6-terra   $2 / $0.20 / $12
+ *   gpt-5.6-luna  $0.20 / $0.02 / $1.20
  */
-export const MODEL = "gpt-5.6-sol" as const;
-export const PERSONA_MODEL = "gpt-5.6-terra" as const;
+export const MODELS = {
+  astra: "gpt-6-astra",
+  sol: "gpt-5.6-sol",
+  terra: "gpt-5.6-terra",
+  luna: "gpt-5.6-luna",
+} as const;
+
+export type Tier = keyof typeof MODELS;
+
+/** Ascending capability. Used to enforce that a judge is never weaker. */
+const STRENGTH: Record<Tier, number> = { luna: 1, terra: 2, sol: 3, astra: 4 };
+
+export type Role = "runtime" | "extractor" | "judge" | "persona";
+
+/**
+ * `dev` is the default: terra everywhere while building, debugging and
+ * iterating on A/B experiments. Roughly 40% of sol's cost, and quality
+ * differences between versions still show up because both arms run the same
+ * model — a comparison is internally consistent at any tier.
+ *
+ * `demo` upgrades the two roles an audience actually judges — the agent's own
+ * conversation and the judge scoring it — and drops personas to luna, which is
+ * the volume driver and needs plausibility rather than brilliance.
+ */
+export const PROFILES: Record<string, Record<Role, Tier>> = {
+  dev:  { runtime: "terra", extractor: "terra", judge: "terra", persona: "terra" },
+  demo: { runtime: "sol",   extractor: "terra", judge: "sol",   persona: "luna" },
+};
+
+const ROLE_ENV: Record<Role, string> = {
+  runtime: "MODEL_RUNTIME",
+  extractor: "MODEL_EXTRACTOR",
+  judge: "MODEL_JUDGE",
+  persona: "MODEL_PERSONA",
+};
+
+export function activeProfile(): string {
+  const name = process.env.MODEL_PROFILE ?? "dev";
+  return name in PROFILES ? name : "dev";
+}
+
+/** Resolves the model for a role: per-role env override, else the profile. */
+export function modelFor(role: Role): string {
+  const override = process.env[ROLE_ENV[role]];
+  if (override) return override;
+  return MODELS[PROFILES[activeProfile()]![role]];
+}
+
+function tierOf(id: string): Tier | null {
+  const hit = (Object.entries(MODELS) as Array<[Tier, string]>).find(([, v]) => v === id);
+  return hit ? hit[0] : null;
+}
+
+/**
+ * A judge weaker than the thing it judges measures the judge, not the agent.
+ * Returns a warning rather than throwing: an unrecognised custom model id is
+ * not necessarily wrong, and refusing to start over a model choice would be
+ * worse than saying so loudly.
+ */
+export function judgeWeakerThanJudged(): string | null {
+  const judge = tierOf(modelFor("judge"));
+  const runtime = tierOf(modelFor("runtime"));
+  if (!judge || !runtime) return null;
+  if (STRENGTH[judge] >= STRENGTH[runtime]) return null;
+  return `judge (${modelFor("judge")}) is weaker than the runtime it scores ` +
+         `(${modelFor("runtime")}). Eval results will measure the judge, not the agent.`;
+}
+
+/** Human-readable summary for startup logging. */
+export function describeModels(): string {
+  const roles: Role[] = ["runtime", "extractor", "judge", "persona"];
+  return `profile=${activeProfile()} ` +
+    roles.map((r) => `${r}=${modelFor(r)}`).join(" ");
+}
+
 
 /** Ceiling on GENERATED tokens only — not a whole-request budget. */
 export const MAX_TOKENS = 16000;
