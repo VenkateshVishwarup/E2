@@ -149,3 +149,62 @@ export function evidenceToJsonSchema(spec: JourneySpec): Record<string, unknown>
     properties,
   };
 }
+
+export interface SpecWarning {
+  code: "unreachable_qualification" | "unknown_scoring_field" | "unreachable_weight";
+  message: string;
+}
+
+/**
+ * Static checks that catch journeys which cannot do what they claim.
+ *
+ * Warnings, not errors: a spec may legitimately rely on optional evidence a
+ * lead volunteers unprompted. But a journey whose required fields cannot reach
+ * its own qualifying threshold will never qualify anyone, and that should be
+ * visible at authoring time rather than after a simulation run.
+ */
+export function lintSpec(spec: JourneySpec): SpecWarning[] {
+  const warnings: SpecWarning[] = [];
+  const fields = Object.keys(spec.evidence);
+
+  // Highest weight each field can contribute — a field holds one value, so
+  // only its best-scoring value counts.
+  const bestPerField = new Map<string, number>();
+  for (const [key, weight] of Object.entries(spec.scoring.weights)) {
+    const dot = key.lastIndexOf(".");
+    if (dot === -1) continue;
+    const field = key.slice(0, dot);
+    if (!fields.includes(field)) {
+      warnings.push({
+        code: "unknown_scoring_field",
+        message: `scoring weight "${key}" references "${field}", which is not an evidence field`,
+      });
+      continue;
+    }
+    bestPerField.set(field, Math.max(bestPerField.get(field) ?? 0, weight));
+  }
+
+  const required = requiredEvidenceFields(spec);
+  const reachable = required.reduce((sum, f) => sum + (bestPerField.get(f) ?? 0), 0);
+
+  const threshold = scoreThreshold(spec.objective.qualifies_when);
+  if (threshold !== null && reachable < threshold) {
+    const optional = [...bestPerField.entries()]
+      .filter(([f]) => !required.includes(f))
+      .map(([f, w]) => `${f} (+${w})`);
+    warnings.push({
+      code: "unreachable_qualification",
+      message:
+        `required evidence can score at most ${reachable}, but qualifying needs ${threshold}. ` +
+        `The gap depends on optional evidence the runtime stops asking for once required ` +
+        `fields are complete: ${optional.join(", ") || "none"}. This journey cannot qualify anyone.`,
+    });
+  }
+  return warnings;
+}
+
+/** Extracts N from a `score >= N` atom, if the predicate contains one. */
+function scoreThreshold(expr: string): number | null {
+  const m = /score\s*>=\s*(-?\d+(?:\.\d+)?)/.exec(expr);
+  return m ? Number(m[1]) : null;
+}

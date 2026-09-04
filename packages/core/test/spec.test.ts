@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseSpec, parseTypeExpr, evidenceToJsonSchema, requiredEvidenceFields }
+import { parseSpec, parseTypeExpr, evidenceToJsonSchema, lintSpec, requiredEvidenceFields }
   from "../src/journey/spec.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -91,5 +91,41 @@ describe("evidenceToJsonSchema", () => {
       .properties.value.enum).toEqual(["executive_mba", "full_time_mba", "online_mba", null]);
     expect((js.properties.prior_qualification as never as { properties: { value: { maxLength: number } } })
       .properties.value.maxLength).toBe(120);
+  });
+});
+
+describe("lintSpec", () => {
+  it("flags a journey whose required evidence cannot reach its own threshold", () => {
+    // The reference journey needs score >= 70 to qualify, but its required
+    // fields top out at 65. The missing 15 sits on `decision_maker`, which is
+    // optional - and the runtime stops asking once required fields are done.
+    const warnings = lintSpec(parseSpec(yaml));
+    const w = warnings.find((x) => x.code === "unreachable_qualification");
+    expect(w).toBeDefined();
+    expect(w!.message).toContain("at most 65");
+    expect(w!.message).toContain("needs 70");
+    expect(w!.message).toContain("decision_maker");
+  });
+
+  it("is silent once the gap is closed by making the field required", () => {
+    const fixed = yaml.replace(
+      "  decision_maker:\n    type: enum[self, parent, employer]\n    required: false",
+      "  decision_maker:\n    type: enum[self, parent, employer]\n    required: true");
+    expect(lintSpec(parseSpec(fixed)).map((w) => w.code))
+      .not.toContain("unreachable_qualification");
+  });
+
+  it("flags a scoring weight pointing at a field that does not exist", () => {
+    const typo = yaml.replace("    timeline.this_intake: 30", "    timelime.this_intake: 30");
+    const w = lintSpec(parseSpec(typo)).find((x) => x.code === "unknown_scoring_field");
+    expect(w?.message).toContain("timelime");
+  });
+
+  it("returns nothing for a journey with no score threshold to miss", () => {
+    const loose = yaml.replace(
+      "  qualifies_when: score >= 70 AND evidence.complete(required)",
+      "  qualifies_when: evidence.complete(required)");
+    expect(lintSpec(parseSpec(loose)).map((w) => w.code))
+      .not.toContain("unreachable_qualification");
   });
 });
