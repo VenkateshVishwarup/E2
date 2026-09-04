@@ -6,7 +6,7 @@
 
 **Architecture:** The simulator writes **real events** into the same spine as live traffic, isolated by an `env` column and grouped by `run_id`. That isolation is what lets the eval harness, the alerting rules and the A/B scoreboard be plain folds over the log rather than three parallel systems. Personas carry **ground truth**, so extraction correctness is measurable rather than merely plausible.
 
-**Tech Stack:** Node 22 · TypeScript 5.6 (ESM) · Fastify 5 · Zod 3 (`zod/v4` dialect at the SDK boundary) · `@anthropic-ai/sdk` 0.123 · PostgreSQL 16 · Vitest · React 18 + Vite 5
+**Tech Stack:** Node 22 · TypeScript 5.6 (ESM) · Fastify 5 · Zod 3 (`zod/v4` dialect at the SDK boundary) · `openai` 7.10 (Responses API) · PostgreSQL 16 · Vitest · React 18 + Vite 5
 
 **Spec:** `docs/superpowers/specs/2026-08-31-midfunnel-agent-platform-design.md` (§15 M2, §5.3, §11)
 **Predecessor:** `docs/superpowers/plans/2026-09-02-m1-money-shot.md` — shipped, 102 tests green
@@ -17,7 +17,9 @@ Everything in M1's Global Constraints still applies. In addition:
 
 - **Never read a journey spec from the `spec` JSONB column.** Postgres JSONB re-sorts object keys, which reorders `routing` and silently misroutes leads. `JourneyRegistry.get()` parses `yaml_source`; any new reader must do the same. This was a real M1 bug — see commit `0ed5fd6`.
 - **Simulated events are never visible to a live-scoped read.** `EventStore` is constructed with an env; there is no cross-env query path.
-- **The judge must never be weaker than the judged.** Eval uses `claude-opus-5` at `effort: "high"`. Personas use `claude-sonnet-5` at `effort: "low"` — the one justified downgrade, because personas need plausibility, not brilliance.
+- **The judge must never be weaker than the judged.** Eval uses `gpt-5.6-sol` at `reasoning: { effort: "high" }`. Personas use `gpt-5.6-terra` at `effort: "low"` — the one justified downgrade, because personas need plausibility, not brilliance.
+- **Responses API shapes** (verified against `openai` 7.10.0): `client.responses.parse(...)` → `response.output_parsed`; schema via `text: { format: zodTextFormat(schema, name) }`; depth via `reasoning: { effort }`; ceiling via `max_output_tokens`; stable prefix in `instructions` with `prompt_cache_key`; free text on `response.output_text`. There is no adaptive-thinking switch.
+- **Caching is automatic prefix matching, not an explicit breakpoint.** Keep the journey spec at the very front of `instructions` and volatile content only in `input`; measure `usage.cached_tokens` rather than assuming the discount.
 - **Simulation and eval go through the Batch API** where volume justifies it — both are overnight-class work and batch is 50% cost.
 - **Ground truth lives on the persona, never in the transcript.** Extraction correctness is scored by comparing extracted evidence against `persona.truth`; if the runtime could see `truth`, the metric would be meaningless.
 - `npm run typecheck` must pass alongside `npm test` for every task. M1 shipped a bug that all tests passed and only `tsc` caught.
@@ -460,7 +462,7 @@ const POSITIVE = [
  * conversation, it must be free, and it must be reproducible for replay. Its
  * one job is deciding whether a declared `sentiment` policy rule fires. When
  * nuance matters, the eval judge (Task 6) scores the same conversation with
- * `claude-opus-5`.
+ * `gpt-5.6-sol`.
  */
 export class LexiconSentiment {
   analyze(turns: Turn[]): SentimentResult {
@@ -620,7 +622,7 @@ git commit -m "feat(runtime): lexicon sentiment, activating the declared sentime
   - `generatePersonas(spec: JourneySpec, n: number, seed?: number): Persona[]`
   - `interface Replier { reply(persona: Persona, spec: JourneySpec, turns: Turn[]): Promise<string | null> }` — `null` means the lead has ghosted
   - `class ScriptedReplier implements Replier` — deterministic, no model
-  - `class ModelReplier implements Replier` — `claude-sonnet-5`, `effort: "low"`
+  - `class ModelReplier implements Replier` — `gpt-5.6-terra`, `reasoning: { effort: "low" }`
 
 **Why ground truth is on the persona:** extraction correctness is only measurable against what the lead *actually was*. If `truth` were reachable from the transcript alone, the metric would collapse into "did the extractor read the transcript", which is not the question. The runtime never sees a `Persona` — it only ever sees the replies.
 
@@ -822,10 +824,10 @@ export function generatePersonas(spec: JourneySpec, n: number, seed = 1): Person
 
 `packages/batch/src/simulate/replier.ts`:
 ```typescript
-import type Anthropic from "@anthropic-ai/sdk";
+import type OpenAI from "openai";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { Turn } from "@midfunnel/core/events/types";
-import { cachedSystem, createClient, MAX_TOKENS } from "@midfunnel/runtime/claude";
+import { cacheKey, createClient, MAX_TOKENS, PERSONA_MODEL } from "@midfunnel/runtime/provider";
 import type { Persona } from "./persona.js";
 
 export interface Replier {
@@ -848,7 +850,7 @@ const OBJECTION_TEXT: Record<Persona["objection"], string> = {
 
 /**
  * Deterministic replier. Used for tests, for reproducible A/B runs, and
- * whenever no Anthropic credential is configured. It answers only the field
+ * whenever no OpenAI credential is configured. It answers only the field
  * the agent's last message names, so it never leaks unasked ground truth.
  */
 export class ScriptedReplier implements Replier {
@@ -888,13 +890,13 @@ export class ScriptedReplier implements Replier {
 }
 
 /**
- * Model-backed replier. `claude-sonnet-5` at low effort: personas need to be
+ * Model-backed replier. `gpt-5.6-terra` at low effort: personas need to be
  * plausible, not brilliant, and this is the volume driver in a simulation run.
  */
 export class ModelReplier implements Replier {
-  private readonly client: Anthropic;
+  private readonly client: OpenAI;
 
-  constructor(client?: Anthropic) {
+  constructor(client?: OpenAI) {
     this.client = client ?? createClient();
   }
 
@@ -906,12 +908,12 @@ export class ModelReplier implements Replier {
       .map((t) => `${t.role === "agent" ? "AGENT" : "YOU"}: ${t.text}`)
       .join("\n");
 
-    const response = await this.client.messages.create({
-      model: "claude-sonnet-5",
-      max_tokens: MAX_TOKENS,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "low" },
-      system: cachedSystem([
+    const response = await this.client.responses.create({
+      model: PERSONA_MODEL,
+      max_output_tokens: MAX_TOKENS,
+      reasoning: { effort: "low" },
+      prompt_cache_key: `persona:${spec.journey}@${spec.version}`,
+      instructions: [
         `You are role-playing a prospective ${spec.vertical} student being contacted over WhatsApp.`,
         "",
         "Reply as the PROSPECT, never as the agent. One short message, under 25 words.",
@@ -923,14 +925,11 @@ export class ModelReplier implements Replier {
         `Mood: ${persona.mood}. Verbosity: ${persona.verbosity}.`,
         `Cooperation: ${persona.cooperation} (0 = evasive, 1 = fully forthcoming).`,
         persona.objection === "none" ? "" : `You have an unspoken objection about ${persona.objection}.`,
-      ].filter(Boolean).join("\n")),
-      messages: [{ role: "user", content: transcript }],
+      ].filter(Boolean).join("\n"),
+      input: transcript,
     });
 
-    for (const block of response.content) {
-      if (block.type === "text") return block.text.trim();
-    }
-    return null;
+    return response.output_text.trim() || null;
   }
 }
 ```
@@ -1520,14 +1519,14 @@ git commit -m "feat(batch): deterministic scorecards graded against persona grou
 
 ---
 
-## Task 6: The judge — qualitative scoring with `claude-opus-5`
+## Task 6: The judge — qualitative scoring with `gpt-5.6-sol`
 
 **Files:**
 - Create: `packages/batch/src/eval/judge.ts`
 - Test: `packages/batch/test/judge.test.ts`
 
 **Interfaces:**
-- Consumes: `Scorecard`, `undetectableRules` (Task 5); `evidenceToZod` pattern (M1 Task 7); `cachedSystem`, `MAX_TOKENS` (M1 Task 7)
+- Consumes: `Scorecard`, `undetectableRules` (Task 5); `evidenceToZod` pattern (M1 Task 7); `cacheKey`, `MAX_TOKENS`, `MODEL` from `@midfunnel/runtime/provider`
 - Produces:
   - ```typescript
     interface Judgement {
@@ -1541,7 +1540,7 @@ git commit -m "feat(batch): deterministic scorecards graded against persona grou
   - `class ConversationJudge { constructor(client?); judge(spec, state, card): Promise<Judgement> }`
   - `attachJudgement(card, judgement): JudgedScorecard`
 
-**Judge ≥ judged.** `claude-opus-5` at `effort: "high"`. A judge weaker than the thing it judges measures the judge. This is the one place in M2 where the model tier is non-negotiable.
+**Judge ≥ judged.** `gpt-5.6-sol` at `reasoning: { effort: "high" }`. A judge weaker than the thing it judges measures the judge. This is the one place in M2 where the model tier is non-negotiable.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1580,7 +1579,7 @@ const VERDICT = {
 };
 
 const fake = (parsed: unknown) =>
-  ({ messages: { parse: vi.fn().mockResolvedValue({ parsed_output: parsed }) } });
+  ({ responses: { parse: vi.fn().mockResolvedValue({ output_parsed: parsed }) } });
 
 describe("ConversationJudge", () => {
   it("returns the judged dimensions", async () => {
@@ -1590,22 +1589,21 @@ describe("ConversationJudge", () => {
     expect(j.policyBreaches).toEqual([]);
   });
 
-  it("judges with opus-5 at high effort", async () => {
+  it("judges with the flagship model at high effort", async () => {
     const client = fake(VERDICT);
     await new ConversationJudge(client as never).judge(spec, state, card);
-    const req = client.messages.parse.mock.calls[0]![0] as {
-      model: string; output_config: { effort: string }; thinking: unknown;
+    const req = client.responses.parse.mock.calls[0]![0] as {
+      model: string; reasoning: { effort: string };
     };
     // The judge must never be weaker than the judged.
-    expect(req.model).toBe("claude-opus-5");
-    expect(req.output_config.effort).toBe("high");
-    expect(req.thinking).toEqual({ type: "adaptive" });
+    expect(req.model).toBe("gpt-5.6-sol");
+    expect(req.reasoning.effort).toBe("high");
   });
 
   it("asks only about rules the deterministic detectors cannot settle", async () => {
     const client = fake(VERDICT);
     await new ConversationJudge(client as never).judge(spec, state, card);
-    const sent = JSON.stringify(client.messages.parse.mock.calls[0]![0]);
+    const sent = JSON.stringify(client.responses.parse.mock.calls[0]![0]);
     expect(sent).toContain("compare_to_competitors");
     // quote_exact_fees is already settled by regex - do not pay a model to redo it.
     expect(sent).not.toContain("quote_exact_fees");
@@ -1636,12 +1634,12 @@ Expected: FAIL — `../src/eval/judge.js` not found
 
 `packages/batch/src/eval/judge.ts`:
 ```typescript
-import type Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import type OpenAI from "openai";
+import { zodTextFormat } from "openai/helpers/zod";
 import * as z from "zod/v4";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { LeadState } from "@midfunnel/core/events/types";
-import { cachedSystem, createClient, MAX_TOKENS, MODEL } from "@midfunnel/runtime/claude";
+import { cacheKey, createClient, MAX_TOKENS, MODEL } from "@midfunnel/runtime/provider";
 import { undetectableRules, type Scorecard } from "./scorecard.js";
 
 export interface Judgement {
@@ -1666,9 +1664,9 @@ const judgementSchema = z.object({
 });
 
 export class ConversationJudge {
-  private readonly client: Anthropic;
+  private readonly client: OpenAI;
 
-  constructor(client?: Anthropic) {
+  constructor(client?: OpenAI) {
     this.client = client ?? createClient();
   }
 
@@ -1684,13 +1682,14 @@ export class ConversationJudge {
       .map((t) => `${t.role === "agent" ? "AGENT" : "LEAD"}: ${t.text}`)
       .join("\n");
 
-    const response = await this.client.messages.parse({
+    const response = await this.client.responses.parse({
       model: MODEL,
-      max_tokens: MAX_TOKENS,
-      thinking: { type: "adaptive" },
+      max_output_tokens: MAX_TOKENS,
       // The judge must never be weaker than the judged.
-      output_config: { format: zodOutputFormat(judgementSchema), effort: "high" },
-      system: cachedSystem([
+      reasoning: { effort: "high" },
+      text: { format: zodTextFormat(judgementSchema, "judgement") },
+      prompt_cache_key: `judge:${cacheKey(spec.journey, spec.version)}`,
+      instructions: [
         `You review lead-qualification conversations for a ${spec.vertical} institution.`,
         `The agent's goal was: ${spec.objective.goal}.`,
         "",
@@ -1700,10 +1699,8 @@ export class ConversationJudge {
         "Score naturalness and questionQuality 1-5. Be exacting: 5 means you would be",
         "happy for this to represent the institution to a paying customer.",
         "Judge only the AGENT's conduct. Never penalise the agent for what the lead said.",
-      ].join("\n")),
-      messages: [{
-        role: "user",
-        content: JSON.stringify({
+      ].join("\n"),
+      input: JSON.stringify({
           transcript,
           mechanical_findings: {
             evidenceCompleteness: card.evidenceCompleteness,
@@ -1713,10 +1710,9 @@ export class ConversationJudge {
             outcome: card.outcome,
           },
         }, null, 2),
-      }],
     });
 
-    const parsed = response.parsed_output as Judgement | null;
+    const parsed = response.output_parsed as Judgement | null;
     if (!parsed) throw new Error("judge received no structured output from the model");
     return parsed;
   }
@@ -2561,7 +2557,7 @@ export function registerSimulateRoutes(app: FastifyInstance, deps: ServerDeps): 
 }
 ```
 
-In `packages/web/src/server.ts`, call `registerSimulateRoutes(app, deps)` inside `buildServer` next to the existing `registerRoutes(app, deps)`, and construct a real `SimulationService` in `main()` wiring `SimulationRunner`, `scoreConversation`, `aggregate`, `evaluateAlerts` and `compareRuns` — using `new EventStore(pool, tenantId, "sim")` for the simulation store, and `ScriptedReplier` when no Anthropic credential is present (same fallback and same loud warning as the extractor).
+In `packages/web/src/server.ts`, call `registerSimulateRoutes(app, deps)` inside `buildServer` next to the existing `registerRoutes(app, deps)`, and construct a real `SimulationService` in `main()` wiring `SimulationRunner`, `scoreConversation`, `aggregate`, `evaluateAlerts` and `compareRuns` — using `new EventStore(pool, tenantId, "sim")` for the simulation store, and `ScriptedReplier` when no `OPENAI_API_KEY` is present (same fallback and same loud warning as the extractor).
 
 - [ ] **Step 5: Write the console screens**
 

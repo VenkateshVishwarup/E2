@@ -3,6 +3,7 @@
 **Date:** 2026-08-31
 **Revised:** 2026-09-02 — reconciled against the 2026-09-02 platform orchestration call
 (agent identity, metric definitions, platform seams, conversational rendering)
+**Revised:** 2026-09-04 — model provider switched from Anthropic to OpenAI (§7.3, §17 row 20)
 **Status:** Approved for implementation planning
 **Author:** Venkatesh Vishwarup (with Claude)
 
@@ -456,9 +457,9 @@ mean by converted?"* with the actual predicate rather than a guess.
 |---|---|
 | Runtime | **Node 22 LTS + TypeScript** |
 | HTTP | **Fastify** (JSON-Schema-native route validation) |
-| Schema | **Zod** — journey spec → Zod → JSON Schema → `output_config.format` |
+| Schema | **Zod** (`zod/v4` dialect) — journey spec → Zod → JSON Schema → `text.format` |
 | Datastore | **PostgreSQL**, single instance. Event log, registry, outcomes, scorecards. `pgvector` if the Insight Engine needs semantic search |
-| Model | **Anthropic Claude** via `@anthropic-ai/sdk` |
+| Model | **OpenAI GPT-5.6** via `openai` (Responses API) |
 | Console | **React + Vite** |
 | Deliberately absent | Kafka · RabbitMQ · Redis · vector DB · Solr · queue |
 
@@ -471,7 +472,7 @@ the small-footprint goal.
 
 The workload was assessed first. **There is no CPU-bound work anywhere in this system.**
 The runtime is I/O-bound (every step waits on a 0.5–5s model call); aggregation happens
-in Postgres; replay is rate-limited by the Anthropic API, not by the runtime. So raw
+in Postgres; replay is rate-limited by the model API, not by the runtime. So raw
 compute throughput — the usual reason to choose Go or the JVM — is close to irrelevant.
 
 Two criteria decided it.
@@ -484,7 +485,7 @@ JSON Schema, and used to drive extraction, validation, scoring, evaluation and d
   forfeits exactly the static typing Go is chosen for
 - **Java is weaker still** — records plus Jackson plus hand-built schema, and reflection-heavy
 - **TypeScript is exceptional at it.** Zod schemas are *values*: composable at runtime,
-  natively serialisable to JSON Schema, first-class in the Anthropic SDK
+  natively serialisable to JSON Schema, first-class in the provider SDK (`zodTextFormat`)
 
 **The second: a React console ships regardless**, so "one language everywhere" was never
 available — it is TypeScript plus *something* in every scenario. Choosing TypeScript for
@@ -513,14 +514,23 @@ In JVM mode Quarkus's advantage evaporates and Spring Boot's ecosystem wins.
 
 Not planned — the declarative approach turns out to be what the API is built for.
 
-1. **The evidence schema is a JSON Schema.** It compiles into `output_config: {format: {...}}`
-   and the API guarantees conformance; `messages.parse()` validates it
-2. **The journey spec is a perfect cache prefix.** Spec, policy and tool definitions are
-   byte-identical across every conversation in a run; only turns differ. Render order is
-   `tools → system → messages`, so the cache breakpoint lands exactly where the spec ends
+1. **The evidence schema is a JSON Schema.** It compiles into `text: {format: zodTextFormat(...)}`
+   and the API guarantees conformance; `responses.parse()` validates it into `output_parsed`
+2. **The journey spec is the cache prefix.** Spec, policy and tool definitions are
+   byte-identical across every conversation in a run; only turns differ. They go in
+   `instructions`, the transcript goes in `input`, and `prompt_cache_key` is set per
+   journey version. **See the caveat below** — this is weaker than it was
 3. **Replay and simulation are textbook Batch API workloads** — neither is latency-sensitive,
    and batch runs at **50% cost**
-4. **Effort is a per-component dial** — `output_config: {effort: ...}`
+4. **Effort is a per-component dial** — `reasoning: {effort: ...}`, from `minimal` to `max`
+
+**Caveat on caching, recorded because it weakened.** Under the previous Anthropic design an
+explicit `cache_control` breakpoint was placed exactly where the spec ended, which made the
+prefix hit a *guarantee*. OpenAI caches automatically on prefix match; `prompt_cache_key`
+only steers requests toward the same cache. The ordering discipline therefore carries the
+entire burden, and cache hit rate is now something to **measure** (`usage.cached_tokens`)
+rather than something to assert. Mitigating factor: cached input on `gpt-5.6-sol` is
+**$0.40/1M against $4.00 uncached**, a 10× discount, so the ordering is worth protecting.
 
 ---
 
@@ -536,13 +546,19 @@ Two principles, both load-bearing:
 
 | Component | Model | Effort | Reasoning |
 |---|---|---|---|
-| Agent Runtime | `claude-opus-5` | `high` | This is the product. Quality here is the demo |
-| Evidence Extractor | `claude-opus-5` | `low` | Schema-constrained, so low effort suffices — but extraction errors corrupt the event log and every downstream ROI number. Not a place to economise |
-| Replay Engine | `claude-opus-5` | `high` | Must match the runtime exactly. Non-negotiable |
-| Eval / judge | `claude-opus-5` | `high` | Judge ≥ judged |
-| Insight Engine | `claude-opus-5` | `high` | Reasoning quality is the output |
-| Copilot | `claude-opus-5` | `xhigh` | Marketer-facing reasoning; proposes spec diffs |
-| Persona Simulator | `claude-sonnet-5` | `low` | The one justified downgrade. Personas need *plausibility*, not brilliance, and this is the volume driver — thousands of conversations per run at $2/$10 versus $5/$25 |
+| Agent Runtime | `gpt-5.6-sol` | `high` | This is the product. Quality here is the demo |
+| Evidence Extractor | `gpt-5.6-sol` | `low` | Schema-constrained, so low effort suffices — but extraction errors corrupt the event log and every downstream ROI number. Not a place to economise |
+| Replay Engine | `gpt-5.6-sol` | `high` | Must match the runtime exactly. Non-negotiable |
+| Eval / judge | `gpt-5.6-sol` | `high` | Judge ≥ judged |
+| Insight Engine | `gpt-5.6-sol` | `high` | Reasoning quality is the output |
+| Copilot | `gpt-5.6-sol` | `xhigh` | Marketer-facing reasoning; proposes spec diffs |
+| Persona Simulator | `gpt-5.6-terra` | `low` | The one justified downgrade. Personas need *plausibility*, not brilliance, and this is the volume driver — thousands of conversations per run at $2/$12 versus $4/$20 |
+
+Prices per 1M tokens (input / cached input / output): `gpt-5.6-sol` **$4 / $0.40 / $20** ·
+`gpt-5.6-terra` **$2 / $0.20 / $12** · `gpt-5.6-luna` **$0.20 / $0.02 / $1.20** ·
+`gpt-6-astra` **$10 / $1.00 / $50**. Astra is the stronger flagship and is deliberately not
+the default: the judge only has to be at least as strong as the judged, and if both are
+`sol` that holds at 2.5× less cost.
 
 **Pricing reference (per 1M tokens, as of 2026-08-31):** Opus 5 — $5 in / $25 out ·
 Sonnet 5 — $2 / $10 · Haiku 4.5 — $1 / $5.
@@ -552,7 +568,8 @@ Sonnet 5 — $2 / $10 · Haiku 4.5 — $1 / $5.
 - **Batch API for replay and simulation — 50% off.** Neither is latency-sensitive; both run
   as overnight jobs
 - **Prompt caching on the journey-spec prefix.** Most of the input cost across a run
-- **Next lever if simulation volume dominates:** `claude-haiku-4-5` for personas. Noted rather
+- **Next lever if simulation volume dominates:** `gpt-5.6-luna` for personas, at $0.20/$1.20
+  — a 10× cut on the volume driver. Noted rather
   than pre-applied, to avoid degrading persona realism before it is a measured problem
 
 ### 8.2 Budget note
@@ -566,11 +583,18 @@ the meeting. Budget for two or three full runs, not twenty.**
 
 ### 8.3 API notes
 
-Several API shapes changed during 2025–26. Read the current reference before writing client
-code rather than working from recall. Specifically: `thinking: {type: "adaptive"}` (the older
-`budget_tokens` form is **rejected with a 400** on Opus 5 and Sonnet 5); `output_config.format`
-rather than the deprecated `output_format`; assistant prefill is removed and returns 400;
-`strict: true` belongs on the tool definition, not on `tool_choice`.
+Model ids and API shapes drift faster than a spec does. Read the current reference — or the
+installed SDK's own type definitions, which is what was actually done here — before writing
+client code, rather than working from recall.
+
+Verified against `openai` **7.10.0** on 2026-09-04:
+`client.responses.parse(...)` returns the validated object on **`output_parsed`**;
+the schema goes in **`text: { format: zodTextFormat(schema, name) }`** (helper from
+`openai/helpers/zod`, which requires the **`zod/v4`** dialect); reasoning depth is
+**`reasoning: { effort }`** with `none | minimal | low | medium | high | xhigh | max`;
+the generation ceiling is **`max_output_tokens`**; the stable prefix goes in
+**`instructions`** with **`prompt_cache_key`** as a routing hint; free text comes back on
+**`response.output_text`**. There is no adaptive-thinking switch — `effort` is the only dial.
 
 ---
 
@@ -938,6 +962,8 @@ month three.
 | 17 | **Metrics are declared predicates**; no global `Converted` event | *"Converted"* means different things per team; a global definition is wrong for most users. Record facts, let consumers define predicates | A canonical conversion definition in the platform |
 | 18 | **Platform layers treated as ports**, not decided | Shared-vs-separate is explicitly unresolved upstream; ports make that survivable instead of blocking | Picking a side and rebuilding when the platform decides differently |
 | 19 | Eval harness **is** the data-quality validator | Validating against observed outcomes is ground truth; a second LLM with no ground truth measures correlation, not correctness | The proposed secondary-LLM validator pattern |
+| 20 | **OpenAI `gpt-5.6-sol`** as the model provider | Owner's decision (2026-09-04). Slightly cheaper than the Anthropic tier it replaces ($4/$20 vs $5/$25) with a 10× cached-input discount. The `step()` and `extract()` contracts did not change, so the swap touched one module — the first real test of the replaceable-runtime property in §5.4 | Anthropic Claude, as originally specified |
+| 21 | Accept weaker cache **guarantees** for automatic caching | No explicit breakpoint exists on the Responses API. Prefix ordering now carries the whole burden, and hit rate becomes a measured number rather than an asserted one. Judged an acceptable trade for the price difference — but it is a real loss, recorded in §7.3 | Keeping explicit `cache_control` breakpoints (would have meant staying on Anthropic) |
 
 ---
 
@@ -949,6 +975,7 @@ month three.
 | Replay lift is challenged as unrigorous | High | §13.3 limitations stated openly; confidence intervals always; observed and modelled values visually distinct |
 | Persona realism is circular — the simulator flatters the agent | High | Personas calibrated against real transcript shapes, never invented. Report simulated and replayed results separately |
 | Cost of full replay runs | Medium | Batch API (50%), spec-prefix caching, 1k sample during development, 2–3 full runs total |
+| Prefix cache does not hit as assumed | Medium | Caching is automatic and unguaranteed (§7.3). Measure `usage.cached_tokens` on the first real run rather than assuming the discount; if it misses, the prompt ordering is the thing to fix |
 | The 11–12 day estimate slips | Medium | Milestones are independently showable; M1 alone kills the commercial objection |
 | "Simulated transport" reads as faking it | Medium | Answer prepared and rehearsed: everything except transport is real, and the channel layer is abstract by design |
 | Declarative authoring is unfamiliar to FDEs | Medium (post-MVP) | The copilot is partly how that adoption cost is paid down |

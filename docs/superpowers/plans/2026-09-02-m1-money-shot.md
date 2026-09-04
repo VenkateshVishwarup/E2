@@ -10,6 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-31-midfunnel-agent-platform-design.md`
 
+> **Superseded in part (2026-09-04):** this plan was executed against the Anthropic
+> SDK. The model provider has since moved to OpenAI — `provider.ts` replaces
+> `claude.ts`, `responses.parse` replaces `messages.parse`, and the models are
+> `gpt-5.6-sol` / `gpt-5.6-terra`. The shipped code is the source of truth; see
+> spec §7.3 and decision-log rows 20–21. Everything else here still holds.
+
 ## Global Constraints
 
 - **Node 22 LTS**, ESM only (`"type": "module"` in every package). `__dirname`/`__filename` are undefined — derive from `import.meta.url` when a script-relative path is needed.
