@@ -5,3 +5,8 @@ export * from "./replay/engine.js";
 export * from "./simulate/persona.js";
 export * from "./simulate/replier.js";
 export * from "./simulate/runner.js";
+export * from "./eval/scorecard.js";
+export * from "./eval/judge.js";
+export * from "./eval/alerts.js";
+export * from "./experiment/allocator.js";
+export * from "./experiment/compare.js";
