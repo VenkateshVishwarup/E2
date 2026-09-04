@@ -1,8 +1,8 @@
-import type Anthropic from "@anthropic-ai/sdk";
+import type OpenAI from "openai";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { LeadState } from "@midfunnel/core/events/types";
 import { EvidenceExtractor, type ExtractedField } from "./extractor.js";
-import { cachedSystem, createClient, MAX_TOKENS, MODEL } from "./claude.js";
+import { cacheKey, createClient, MAX_TOKENS, MODEL } from "./provider.js";
 import { evidenceComplete, qualifies, route, score, type Evidence } from "./scoring.js";
 
 export type Action =
@@ -25,9 +25,9 @@ const HUMAN_REQUEST = /\b(human|agent|person|representative|talk to someone|real
 
 export class AgentRuntime {
   private readonly extractor: EvidenceExtractor;
-  private readonly client: Anthropic;
+  private readonly client: OpenAI;
 
-  constructor(extractor?: EvidenceExtractor, client?: Anthropic) {
+  constructor(extractor?: EvidenceExtractor, client?: OpenAI) {
     this.client = client ?? createClient();
     this.extractor = extractor ?? new EvidenceExtractor(this.client);
   }
@@ -105,11 +105,11 @@ export class AgentRuntime {
     const transcript = state.turns.map((t) =>
       `${t.role === "agent" ? "AGENT" : "LEAD"}: ${t.text}`).join("\n");
 
-    const response = await this.client.messages.create({
+    const response = await this.client.responses.create({
       model: MODEL,
-      max_tokens: MAX_TOKENS,
-      thinking: { type: "adaptive" },
-      system: cachedSystem([
+      max_output_tokens: MAX_TOKENS,
+      reasoning: { effort: "high" },
+      instructions: [
         `You are ${spec.agent.persona}, qualifying a ${spec.vertical} lead over chat.`,
         `Goal: ${spec.objective.goal}.`,
         "",
@@ -118,24 +118,20 @@ export class AgentRuntime {
         "",
         "Write ONE short, natural message. No preamble, no sign-off, no emoji.",
         "Under 30 words. Ask about exactly one thing.",
-      ].join("\n")),
-      output_config: { effort: "high" },
-      messages: [{
-        role: "user",
-        content: JSON.stringify({
-          transcript,
-          established: Object.fromEntries(
-            Object.entries(evidence).map(([k, v]) => [k, v.value]),
-          ),
-          ask_about: { field, type: def.type, description: def.description ?? null },
-        }, null, 2),
-      }],
+      ].join("\n"),
+      prompt_cache_key: cacheKey(spec.journey, spec.version),
+      input: JSON.stringify({
+        transcript,
+        established: Object.fromEntries(
+          Object.entries(evidence).map(([k, v]) => [k, v.value]),
+        ),
+        ask_about: { field, type: def.type, description: def.description ?? null },
+      }, null, 2),
     });
 
-    for (const block of response.content) {
-      if (block.type === "text") return block.text.trim();
-    }
-    throw new Error("runtime received no text content from the model");
+    const text = response.output_text.trim();
+    if (!text) throw new Error("runtime received no text content from the model");
+    return text;
   }
 }
 

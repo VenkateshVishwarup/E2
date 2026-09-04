@@ -23,7 +23,7 @@ const EMPTY = {
 };
 
 function fakeClient(parsed: unknown) {
-  return { messages: { parse: vi.fn().mockResolvedValue({ parsed_output: parsed }) } };
+  return { responses: { parse: vi.fn().mockResolvedValue({ output_parsed: parsed }) } };
 }
 
 describe("EvidenceExtractor", () => {
@@ -47,19 +47,33 @@ describe("EvidenceExtractor", () => {
     expect(out).not.toHaveProperty("target_program");
   });
 
-  it("sends the journey spec as a cached system prefix", async () => {
+  it("puts the journey spec in the stable prefix with a per-version cache key", async () => {
     const client = fakeClient(EMPTY);
     await new EvidenceExtractor(client as never).extract(spec, turns);
-    const req = client.messages.parse.mock.calls[0]![0] as {
+    const req = client.responses.parse.mock.calls[0]![0] as {
       model: string;
-      system: Array<{ cache_control?: unknown }>;
-      output_config: { effort: string };
-      thinking: unknown;
+      instructions: string;
+      prompt_cache_key: string;
+      reasoning: { effort: string };
+      input: string;
     };
-    expect(req.model).toBe("claude-opus-5");
-    expect(req.system[0]!.cache_control).toEqual({ type: "ephemeral" });
-    expect(req.output_config.effort).toBe("low");
-    expect(req.thinking).toEqual({ type: "adaptive" });
+    expect(req.model).toBe("gpt-5.6-sol");
+    expect(req.reasoning.effort).toBe("low");
+    // Prefix caching is automatic and prefix-matched, so the spec must sit in
+    // `instructions` and the volatile transcript only in `input`.
+    expect(req.instructions).toContain(spec.journey);
+    expect(req.instructions).not.toContain("TRANSCRIPT");
+    expect(req.input).toContain("TRANSCRIPT");
+    expect(req.prompt_cache_key).toBe(`${spec.journey}@${spec.version}`);
+  });
+
+  it("does not reuse a cache key across journey versions", async () => {
+    const client = fakeClient(EMPTY);
+    const x = new EvidenceExtractor(client as never);
+    await x.extract(spec, turns);
+    await x.extract({ ...spec, version: 99 }, turns);
+    const keys = client.responses.parse.mock.calls.map((c) => (c[0] as { prompt_cache_key: string }).prompt_cache_key);
+    expect(new Set(keys).size).toBe(2);
   });
 
   it("throws when the model returns no parsed output", async () => {

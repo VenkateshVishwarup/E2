@@ -22,9 +22,9 @@ const extractor = (evidence: Record<string, { value: unknown; confidence: number
   ({ extract: vi.fn().mockResolvedValue(evidence) }) as never;
 
 const asker = (text: string) =>
-  ({ messages: { create: vi.fn().mockResolvedValue({ content: [{ type: "text", text }] }) } });
+  ({ responses: { create: vi.fn().mockResolvedValue({ output_text: text }) } });
 
-const callsOf = (a: ReturnType<typeof asker>) => a.messages.create.mock.calls;
+const callsOf = (a: ReturnType<typeof asker>) => a.responses.create.mock.calls;
 
 describe("AgentRuntime.step", () => {
   it("opens with the pinned template and the AI disclosure", async () => {

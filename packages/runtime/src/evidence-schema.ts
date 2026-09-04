@@ -2,9 +2,10 @@ import * as z from "zod/v4";
 import { parseTypeExpr, type JourneySpec } from "@midfunnel/core/journey/spec";
 
 /**
- * The Zod mirror of core's `evidenceToJsonSchema`, in the dialect the
- * Anthropic SDK's `zodOutputFormat` helper requires (it imports `zod/v4`
- * internally and calls `z.toJSONSchema`).
+ * The Zod mirror of core's `evidenceToJsonSchema`, in the `zod/v4` dialect the
+ * provider SDK helper requires. (Both OpenAI's `zodTextFormat` and Anthropic's
+ * `zodOutputFormat` `require("zod/v4")` internally, so this file survived the
+ * provider switch unchanged — worth keeping that way.)
  *
  * This lives in `runtime`, not `core`, on purpose: core must stay ignorant of
  * which model provider is behind `step()`. A different runtime brings its own

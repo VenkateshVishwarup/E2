@@ -1,16 +1,16 @@
-import type Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import type OpenAI from "openai";
+import { zodTextFormat } from "openai/helpers/zod";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
-import { evidenceToZod } from "./evidence-schema.js";
 import type { Turn } from "@midfunnel/core/events/types";
-import { cachedSystem, createClient, MAX_TOKENS, MODEL } from "./claude.js";
+import { evidenceToZod } from "./evidence-schema.js";
+import { cacheKey, createClient, MAX_TOKENS, MODEL } from "./provider.js";
 
 export interface ExtractedField { value: unknown; confidence: number }
 
 export class EvidenceExtractor {
-  private readonly client: Anthropic;
+  private readonly client: OpenAI;
 
-  constructor(client?: Anthropic) {
+  constructor(client?: OpenAI) {
     this.client = client ?? createClient();
   }
 
@@ -26,21 +26,21 @@ export class EvidenceExtractor {
       .map((t) => `${t.role === "agent" ? "AGENT" : "LEAD"}: ${t.text}`)
       .join("\n");
 
-    const response = await this.client.messages.parse({
+    const response = await this.client.responses.parse({
       model: MODEL,
-      max_tokens: MAX_TOKENS,
-      thinking: { type: "adaptive" },
-      system: cachedSystem(systemPrompt(spec)),
-      output_config: {
-        format: zodOutputFormat(schema),
-        // Schema-constrained work: the schema does the heavy lifting, so low
-        // effort is sufficient and this runs on every turn.
-        effort: "low",
-      },
-      messages: [{ role: "user", content: `TRANSCRIPT\n\n${transcript}` }],
+      max_output_tokens: MAX_TOKENS,
+      // Schema-constrained work: the schema does the heavy lifting, so low
+      // effort is sufficient and this runs on every turn of every conversation.
+      reasoning: { effort: "low" },
+      // Stable prefix first, volatile input last — this is what makes the
+      // platform's automatic prefix caching actually hit.
+      instructions: systemPrompt(spec),
+      prompt_cache_key: cacheKey(spec.journey, spec.version),
+      text: { format: zodTextFormat(schema, "evidence") },
+      input: `TRANSCRIPT\n\n${transcript}`,
     });
 
-    const parsed = response.parsed_output as Record<string, ExtractedField> | null;
+    const parsed = response.output_parsed as Record<string, ExtractedField> | null;
     if (!parsed) throw new Error("extractor received no structured output from the model");
 
     const out: Record<string, ExtractedField> = {};

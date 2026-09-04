@@ -4,6 +4,7 @@ import { EventStore } from "@midfunnel/core/events/store";
 import { JourneyRegistry } from "@midfunnel/core/journey/registry";
 import { AgentRuntime } from "@midfunnel/runtime/step";
 import { KeywordExtractor } from "@midfunnel/runtime/keyword-extractor";
+import { loadEnvFile } from "@midfunnel/runtime/provider";
 import { ReplayEngine } from "@midfunnel/batch/replay/engine";
 import { registerRoutes, type ServerDeps } from "./routes/replay.js";
 
@@ -24,6 +25,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
  * M1 exercises `web`; the switch exists now so adding the others is a flag.
  */
 export async function main(): Promise<void> {
+  loadEnvFile();
   const role = process.env.ROLE ?? "all";
   const tenantId = process.env.TENANT_ID ?? "t1";
   // Local dev default so `npm start` works without a .env; production always
@@ -34,14 +36,14 @@ export async function main(): Promise<void> {
 
   const registry = new JourneyRegistry(pool, tenantId);
   const events = new EventStore(pool, tenantId);
-  // Without an Anthropic credential the model-backed extractor cannot run, so
+  // Without an OpenAI credential the model-backed extractor cannot run, so
   // fall back to the deterministic keyword extractor. It is materially weaker;
   // say so loudly rather than letting anyone mistake its output for the real
   // runtime's.
-  const hasCredential = Boolean(process.env.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN);
+  const hasCredential = Boolean(process.env.OPENAI_API_KEY);
   if (!hasCredential) {
     console.warn(
-      "[runtime] no ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN found - " +
+      "[runtime] no OPENAI_API_KEY found (checked the environment and .env) - " +
       "using KeywordExtractor. Results are deterministic but NOT representative " +
       "of the real agent. Set a credential for genuine replay numbers.",
     );

@@ -2,7 +2,7 @@
  * End-to-end M1 verification: import a synthetic historical cohort, publish two
  * journey versions, replay one against the other, print the lift.
  *
- * Uses a deterministic stub runtime so it needs no ANTHROPIC_API_KEY. Swap in
+ * Uses a deterministic stub runtime so it needs no OPENAI_API_KEY. Swap in
  * `new AgentRuntime()` to run it against the real model.
  */
 import { readFileSync } from "node:fs";
