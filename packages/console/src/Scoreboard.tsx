@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { defaultPair } from "./useVersions.js";
+import { VersionPicker } from "./VersionPicker.js";
 
 interface Board {
   a: { target: string; quality: { qualifiedRate: number; meanCompleteness: number } };
@@ -18,7 +20,14 @@ const VERDICT_TEXT: Record<Board["verdict"], string> = {
   inconclusive: "Inconclusive — the interval spans zero, so this is not evidence",
 };
 
-export function Scoreboard({ journey, a, b }: { journey: string; a: number; b: number }) {
+export function Scoreboard({ journey, versions }: { journey: string; versions: number[] }) {
+  const [a, setA] = useState(0);
+  const [b, setB] = useState(0);
+  useEffect(() => {
+    const p = defaultPair(versions);
+    if (p) { setA(p.a); setB(p.b); }
+  }, [versions]);
+
   const [board, setBoard] = useState<Board | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +50,11 @@ export function Scoreboard({ journey, a, b }: { journey: string; a: number; b: n
       <p className="muted">
         The same 200 personas meet both versions, so the comparison is paired.
       </p>
-      <button className="btn" disabled={busy} onClick={() => void go()}>
+      <div className="pickers">
+        <VersionPicker label="A" versions={versions} value={a} onChange={(v) => { setA(v); setBoard(null); }} exclude={b} disabled={busy} />
+        <VersionPicker label="B" versions={versions} value={b} onChange={(v) => { setB(v); setBoard(null); }} exclude={a} disabled={busy} />
+      </div>
+      <button className="btn" disabled={busy || !a || !b} onClick={() => void go()}>
         {busy ? "Running both arms…" : `Compare v${a} vs v${b}`}
       </button>
 

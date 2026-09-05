@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { VersionPicker } from "./VersionPicker.js";
 
 interface Alert { id: string; severity: "warn" | "critical"; message: string }
 interface Quality {
@@ -17,7 +18,10 @@ const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 
 interface SpecWarning { code: string; message: string }
 
-export function SimulateRun({ journey, version }: { journey: string; version: number }) {
+export function SimulateRun({ journey, versions }: { journey: string; versions: number[] }) {
+  const [version, setVersion] = useState(0);
+  useEffect(() => { if (versions[0] !== undefined) setVersion(versions[0]); }, [versions]);
+
   const [result, setResult] = useState<Result | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,6 +33,7 @@ export function SimulateRun({ journey, version }: { journey: string; version: nu
   useEffect(() => {
     void (async () => {
       try {
+        if (!version) return;
         const r = await fetch(
           `/api/journeys/${encodeURIComponent(journey)}/lint?version=${version}`);
         if (r.ok) setWarnings((await r.json()).warnings ?? []);
@@ -52,8 +57,12 @@ export function SimulateRun({ journey, version }: { journey: string; version: nu
   return (
     <>
       <p className="muted">
-        Drive synthetic leads through v{version} before a real one ever touches it.
+        Drive synthetic leads through a version before a real one ever touches it.
       </p>
+      <div className="pickers">
+        <VersionPicker label="version" versions={versions} value={version}
+                       onChange={(v) => { setVersion(v); setResult(null); }} disabled={busy} />
+      </div>
       {warnings.length > 0 && (
         <div className="band modelled">
           <h3>Static check — before anything runs</h3>
@@ -63,8 +72,8 @@ export function SimulateRun({ journey, version }: { journey: string; version: nu
         </div>
       )}
 
-      <button className="btn" disabled={busy} onClick={() => void go(200)}>
-        {busy ? "Simulating…" : "Simulate 200 leads"}
+      <button className="btn" disabled={busy || !version} onClick={() => void go(200)}>
+        {busy ? "Simulating…" : `Simulate 200 leads through v${version || "?"}`}
       </button>
 
       {error && <p className="err">Simulation failed: {error}</p>}

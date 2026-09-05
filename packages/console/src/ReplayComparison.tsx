@@ -1,4 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { defaultPair } from "./useVersions.js";
+import { VersionPicker } from "./VersionPicker.js";
 
 interface Lift {
   n: number;
@@ -17,11 +19,25 @@ interface Lift {
 
 const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 
-export function ReplayComparison({ journey, a, b }: { journey: string; a: number; b: number }) {
+export function ReplayComparison(
+  { journey, versions }: { journey: string; versions: number[] },
+) {
+  const pair = defaultPair(versions);
+  const [a, setA] = useState(pair?.a ?? 0);
+  const [b, setB] = useState(pair?.b ?? 0);
+
+  // The picker starts empty until the versions arrive.
+  useEffect(() => {
+    const p = defaultPair(versions);
+    if (p) { setA(p.a); setB(p.b); }
+  }, [versions]);
+
   const [lift, setLift] = useState<Lift | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!a || !b) return;
+    setLift(null); setError(null);
     fetch("/api/replay", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -35,11 +51,22 @@ export function ReplayComparison({ journey, a, b }: { journey: string; a: number
       .catch((e: Error) => setError(e.message));
   }, [journey, a, b]);
 
-  if (error) return <p className="err">Replay failed: {error}</p>;
-  if (!lift) return <p className="muted">Replaying…</p>;
+  const pickers = (
+    <div className="pickers">
+      <VersionPicker label="baseline" versions={versions} value={a} onChange={setA} exclude={b} />
+      <VersionPicker label="candidate" versions={versions} value={b} onChange={setB} exclude={a} />
+    </div>
+  );
+
+  if (versions.length < 2) {
+    return <p className="muted">Replay compares two versions; publish another one first.</p>;
+  }
+  if (error) return <>{pickers}<p className="err">Replay failed: {error}</p></>;
+  if (!lift) return <>{pickers}<p className="muted">Replaying…</p></>;
 
   return (
     <>
+      {pickers}
       <p className="muted">{lift.n.toLocaleString()} historical leads</p>
 
       <div className="arms">

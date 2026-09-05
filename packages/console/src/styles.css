@@ -156,3 +156,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .yaml-input:focus { outline: 2px solid var(--observed); outline-offset: -1px; }
 .alert strong { display: block; font-size: 11px; text-transform: uppercase;
                 letter-spacing: .04em; margin-bottom: 4px; }
+
+.pickers { display: flex; gap: 14px; align-items: flex-end; margin: 16px 0 14px; }
+.picker { display: flex; flex-direction: column; gap: 4px; }
+.picker-label { color: var(--muted); font-size: 11px; text-transform: uppercase;
+                letter-spacing: .04em; }
+.picker select {
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card); color: var(--fg); font: inherit;
+}
+.picker select:disabled { opacity: .5; }

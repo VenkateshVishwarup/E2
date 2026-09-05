@@ -221,7 +221,7 @@ Reasoning effort, not prompt caching, is the cost lever: on a real call output r
 ## Tests
 
 ```bash
-npm test          # 355 tests
+npm test          # 363 tests
 npm run typecheck
 ```
 

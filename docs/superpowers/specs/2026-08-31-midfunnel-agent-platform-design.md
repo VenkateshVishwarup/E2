@@ -951,6 +951,31 @@ the same event log. What the build forced that the plan did not anticipate:
   this immediately
 - **Token metering is real**, so cost per conversation is measured rather than estimated
 
+### M4 — A product you can use (~2 days)
+
+**Landed 2026-09-05.** Added after the owner observed that everything built so far sat
+*downstream of a conversation that never happened*: journeys were files published by a
+script, no person could talk to an agent, and A/B split only simulated cohorts.
+
+**Builds:** journey editor with live linting · publish-as-deploy · live chat loop writing
+`live`-scoped events · live A/B through the existing allocator · additive seeding · ROI
+reframed on token spend
+
+**Done when:** someone edits the spec, publishes it, chats with what they published, and
+sees that conversation counted in ROI with its real token cost — without disturbing the
+imported history already there.
+
+What the build forced:
+
+- **The action-to-event translation had to be shared** before anything else. Extracting it
+  from the simulator also surfaced a bug: it never emitted `HandoffCreated`, so the
+  `booked` metric could never be true in a simulation regardless of routing
+- **Seeding had to become additive.** `TRUNCATE` in a seed script is fine until real
+  conversations exist, at which point it is data loss on a schedule
+- **Pinned templates were never rendered.** No test caught it because nothing had ever
+  sent a pinned message to a person
+- **Hardcoded version numbers in the console went stale the moment authoring shipped**
+
 ---
 
 ## 16. Workstreams for a Team
@@ -1000,6 +1025,11 @@ month three.
 | 18 | **Platform layers treated as ports**, not decided | Shared-vs-separate is explicitly unresolved upstream; ports make that survivable instead of blocking | Picking a side and rebuilding when the platform decides differently |
 | 19 | Eval harness **is** the data-quality validator | Validating against observed outcomes is ground truth; a second LLM with no ground truth measures correlation, not correctness | The proposed secondary-LLM validator pattern |
 | 20 | **OpenAI `gpt-5.6-sol`** as the model provider | Owner's decision (2026-09-04). Slightly cheaper than the Anthropic tier it replaces ($4/$20 vs $5/$25) with a 10× cached-input discount. The `step()` and `extract()` contracts did not change, so the swap touched one module — the first real test of the replaceable-runtime property in §5.4 | Anthropic Claude, as originally specified |
+| 32 | **A live conversation and a simulated one share one action-to-event translation** | Two copies would diverge within a week, and every fold downstream — attribution, insights, replay, the copilot — would then quietly mean something different for live traffic than for sim. They differ in the two fields already modelled: `env` and `runId` | A separate live persistence path (faster to write, impossible to keep honest) |
+| 31 | **Publishing is deployment; there is no deploy step** | A journey version is immutable and self-contained, so "published" and "servable" are the same state. A separate deploy would be a second source of truth about which version is live | Explicit deploy/promote; a `status` column on versions |
+| 30 | **Seeds delete only what they own; chat leads are prefixed** | The seed scripts used `TRUNCATE`, which would have deleted every real conversation the moment anyone reseeded. Owning-by-prefix keeps fixtures re-runnable without that risk | A global reset flag (one mistake away from the same outcome) |
+| 29 | **Pinned text is rendered from declared variables, and unresolved placeholders are a lint error** | The first thing a real lead ever saw was `Hi {{name}}, I'm an AI assistant from {{institute}}.` verbatim — invisible until something finally sent a pinned message to a person. Branding belongs to the spec author; the lead's own details are per conversation | Interpolating in the runtime (it does not know the lead); leaving templates to the channel adapter |
+| 28 | **Live A/B reuses the simulation traffic allocator unchanged** | The allocator was built deterministic and source-mixed for simulated cohorts. Pointing it at live sessions needed wiring, not machinery — which is the same reason parallel-run adoption is not a separate system | A second, live-only splitter |
 | 27 | **Metric predicates are a separate language from routing predicates, with two kinds** | A routing predicate asks about one lead's score; a metric asks about one lead's event history. A single evaluator returning `number` for both would let `qualified_lead` contribute rupees to revenue-per-lead. Boolean metrics aggregate as a count of leads; aggregate metrics as a sum over them | One predicate language; a `Converted` event; SQL per metric |
 | 26 | **Attribution reads the metric definitions of the version each lead RAN UNDER** | Using the latest spec would let an edit to `conversion:` silently rewrite last quarter's numbers — the one thing an append-only log exists to prevent. When definitions drifted across versions present in the data, the report says the column sums two questions | Latest-spec-wins (simpler, and wrong); frozen definitions (unusable) |
 | 25 | **Media spend is allocated evenly to leads, and the method travels in the payload** | Ad platforms report per campaign per day; the spine requires a leadId on every event. Even allocation is an assumption, and a customer disputing cost-per-enrolment is entitled to see which assumption produced the number. A weighted model is a customer decision, not a default | Campaign-level cost table outside the spine; weighted allocation chosen for them |

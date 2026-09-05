@@ -95,9 +95,10 @@ export function ChatTab({ journey }: { journey: string }) {
 
       {state?.offline && (
         <div className="alert warn">
-          No model credential, so a deterministic keyword extractor is answering. It only
-          understands literal values like <code>executive_mba</code> or{" "}
-          <code>this_intake</code>. The events and the contract below are real; the
+          No model credential, so a deterministic keyword extractor is answering. It reads
+          the declared options out of what you type — <em>"the Executive MBA, this
+          intake"</em> works — but it cannot infer, so <em>"I decide myself"</em> will not
+          give it <code>self</code>. The events and the contract on the right are real; the
           conversation quality is not representative.
         </div>
       )}
