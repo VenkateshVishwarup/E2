@@ -1,4 +1,4 @@
-# Mid-Funnel Agent Platform
+# Elevate
 
 An AI agent platform for mid-funnel lead qualification and nurturing, built so that every
 number it shows can be traced back to an event that actually happened.
@@ -51,7 +51,7 @@ data is real either way; the reasoning is not. Concretely, with no key:
 
 - Replay, A/B, ROI and the copilot's *numbers* are unaffected — they are folds over the
   event log, not model output
-- The Simulate tab collects around 51% of evidence rather than the ~86% a real extractor
+- Simulate collects around 51% of evidence rather than the ~86% a real extractor
   manages, so its quality figures are a floor, not a forecast
 - The copilot routes keywords to the same tools instead of reasoning, and stamps the answer
   `offline`
@@ -66,14 +66,23 @@ and refused, but an unrecognised one would just produce a confident 401.
 
 ## Try it in two minutes
 
-1. **Journey tab** — the spec loads. Change something, press *Bump version*, press
+1. **Agent → Journey** — the spec loads. Change something, press *Bump version*, press
    *Publish*. Checks run as you type; warnings never block you.
-2. **Chat tab** — the version you just published is already serving. Talk to it. Watch the
+2. **Agent → Chat** — the version you just published is already serving. Talk to it. Watch the
    evidence contract on the right fill in as you answer, then score and route.
-3. **ROI tab** — your conversation is in there, counted, with its token cost.
+3. **Performance → ROI** — your conversation is in there, counted, with its token cost.
 
 That loop is the product: author a contract, deploy it by publishing it, talk to it, and
 see what it cost against what it earned.
+
+The console has four sections, ordered by where you land and where you stay:
+
+| Section | Screens | |
+|---|---|---|
+| **Performance** | Overview · Insights · ROI · Copilot | what the agent is actually doing — the default view |
+| **Agent** | Journey · Chat | define it, and talk to it |
+| **Experiments** | Simulate · Compare · Replay | try a change before it meets real traffic |
+| **Roadmap** | | what Elevate does not do yet |
 
 ---
 
@@ -81,30 +90,30 @@ see what it cost against what it earned.
 
 | # | Moment | Where | Kills the objection |
 |---|---|---|---|
-| 0 | **Author and deploy** — edit the YAML, publish, and the next conversation is served by it. Publishing *is* deployment | Journey tab | Every deployment starts from scratch |
+| 0 | **Author and deploy** — edit the YAML, publish, and the next conversation is served by it. Publishing *is* deployment | Agent → Journey | Every deployment starts from scratch |
 | 1 | **The money shot** — replay a real cohort through two versions, lift with a confidence interval, drill into the divergent conversations | Replay tab | *"Will customers pay more?"* |
 | 2 | **Declare, don't prompt** — change `decision_maker` from optional to required. That is the entire edit | `journeys/*.yaml`, diff endpoint | Every deployment starts from scratch |
-| 3 | **Sandbox in 60 seconds** — 500 personas against a new version before one real lead sees it | Simulate tab | No way to set up a sandbox |
-| 3b | **Live A/B** — start a chat with a split and the allocator assigns deterministically; a new version takes real traffic without touching the old one | Chat tab | Cannot A/B a live bot |
-| 4 | **Break it on purpose** — ship a bad version; the eval harness catches the policy breach and the alert fires | Simulate tab | No quality tracking |
-| 5 | **A/B scoreboard** — two versions over one paired cohort | A/B tab | No A/B on a live bot |
-| 6 | **ROI, closed loop** — cost per qualified lead and per enrolment, attributed campaign → creative → journey version | ROI tab | Cannot show ROI |
-| 7 | **The copilot** — *"Why is my needs_financing cohort converting worse?"* → real data → a chart → a proposed spec diff | Copilot tab | AI-enabled SaaS, not an AI product |
-| 8 | **No big bang** — the same scoreboard pointed at a parallel-run cohort | A/B tab | Adoption risk |
+| 3 | **Sandbox in 60 seconds** — 500 personas against a new version before one real lead sees it | Experiments → Simulate | No way to set up a sandbox |
+| 3b | **Live A/B** — start a chat with a split and the allocator assigns deterministically; a new version takes real traffic without touching the old one | Agent → Chat | Cannot A/B a live bot |
+| 4 | **Break it on purpose** — ship a bad version; the eval harness catches the policy breach and the alert fires | Experiments → Simulate | No quality tracking |
+| 5 | **A/B scoreboard** — two versions over one paired cohort | Experiments → Compare | No A/B on a live bot |
+| 6 | **ROI, closed loop** — cost per qualified lead and per enrolment, attributed campaign → creative → journey version | Performance → ROI | Cannot show ROI |
+| 7 | **The copilot** — *"Why is my needs_financing cohort converting worse?"* → real data → a chart → a proposed spec diff | Performance → Copilot | AI-enabled SaaS, not an AI product |
+| 8 | **No big bang** — the same scoreboard pointed at a parallel-run cohort | Experiments → Compare | Adoption risk |
 
 Moment 1 is the pitch. Moments 2–7 are why it compounds. Moment 8 is why it is safe.
 
-**On the Simulate tab, v4 reports 0% qualified. That is the product working.** The static
+**On the Simulate screen, v4 reports 0% qualified. That is the product working.** The static
 check above the button says why before you press it: v4's *required* evidence tops out at
 65 against a threshold of 70, so it can never qualify anyone. v5 makes `decision_maker`
-required and qualifies 4.5%, which is what the A/B tab then measures. A journey that cannot
+required and qualifies 4.5%, which is what the Compare screen then measures. A journey that cannot
 do what it claims is caught by reading the spec, not by waiting for a bad quarter.
 
 ---
 
 ## What it does not do yet
 
-Named in the product itself, on a **Roadmap** section, rather than left to be discovered.
+Named in the product itself, in a **Roadmap** section, rather than left to be discovered.
 Each entry says what is already in place, because the distinction that matters is between a
 missing screen and a missing foundation — and almost all of these are the former.
 

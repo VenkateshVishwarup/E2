@@ -1,7 +1,7 @@
 openapi: 3.0.3
 
 info:
-  title: Mid-Funnel Agent Platform API
+  title: Elevate API
   version: 0.3.0
   description: |
     The read and control surface over the event spine.
@@ -29,7 +29,7 @@ info:
 servers:
   - url: http://localhost:3000
     description: Local development
-  - url: https://api.midfunnel.example.com
+  - url: https://api.elevate.example.com
     description: Production
 
 security:

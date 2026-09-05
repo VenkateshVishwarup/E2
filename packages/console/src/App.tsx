@@ -16,33 +16,35 @@ import { item } from "./roadmap-data.js";
 const JOURNEY = "mba-admissions-qualification";
 
 /**
- * Three sections, in the order the work actually happens: build the agent, prove
- * it before it meets real traffic, then read what it did.
+ * Ordered by where people land and where they stay, not by the lifecycle they
+ * traverse once. Performance is first because it is the default view and the
+ * daily one; Agent is where you change things; Experiments is a builder's
+ * bench, kept separate so it stops competing for attention with the screens a
+ * marketer lives on.
  *
- * The middle section is labelled for what it is. Simulation, A/B and replay are
- * a builder's instruments — they answer "is this version safe to ship?" — and
- * mixing them into one flat list with the screens a marketer lives on made
- * every screen look equally central.
+ * All four names are nouns for what the section contains, rather than verbs for
+ * what you are meant to do there — "Prove" and "Measure" read as instructions,
+ * and a nav label should say where you are.
  */
 const SECTIONS = [
   {
-    name: "Build",
-    caption: "Author the contract and try it yourself",
-    tabs: ["Journey", "Chat"],
-  },
-  {
-    name: "Prove",
-    caption: "Before a version meets real traffic",
-    tabs: ["Simulate", "Compare", "Replay"],
-  },
-  {
-    name: "Measure",
-    caption: "What actually happened",
+    name: "Performance",
+    caption: "What your agent is actually doing",
     tabs: ["Overview", "Insights", "ROI", "Copilot"],
   },
   {
+    name: "Agent",
+    caption: "Define it, and talk to it",
+    tabs: ["Journey", "Chat"],
+  },
+  {
+    name: "Experiments",
+    caption: "Try a change before it meets real traffic",
+    tabs: ["Simulate", "Compare", "Replay"],
+  },
+  {
     name: "Roadmap",
-    caption: "What this does not do yet",
+    caption: "What Elevate does not do yet",
     tabs: ["Roadmap"],
   },
 ] as const;
@@ -61,7 +63,7 @@ export function App() {
   return (
     <main className="wrap">
       <header className="masthead">
-        <h1>Mid-Funnel Console</h1>
+        <h1>Elevate</h1>
         {/* One journey today. The registry is keyed by journey already; the
             selector is what is missing, so it is shown rather than implied. */}
         <select className="journey-select" value={JOURNEY} disabled
