@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { money, rate } from "./format.js";
 
 interface Totals {
   leads: number;
@@ -12,10 +13,6 @@ interface Totals {
 interface Report { currency: string; total: Totals; metricKinds: { booleans: string[] } }
 interface Finding { code: string; severity: string; claim: string; n: number }
 interface Insights { leadsAnalysed: number; findings: Finding[] }
-
-const money = (v: number, currency: string) =>
-  new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 0 })
-    .format(v / 100);
 
 export function Overview(
   { journey, versions, onGo }: {
@@ -91,7 +88,7 @@ export function Overview(
         <Metric label="model spend" value={money(total.modelCost, currency)}
                 note={total.modelCost === 0 ? "no model calls yet" : undefined} />
         <Metric label="model cost / qualified"
-                value={qualified === 0 ? "—" : money(Math.round(total.modelCost / qualified), currency)} />
+                value={qualified === 0 ? "—" : money(total.modelCost / qualified, currency)} />
         <Metric label="revenue" value={money(total.sums.revenue ?? 0, currency)} />
       </div>
 
@@ -122,8 +119,6 @@ export function Overview(
     </>
   );
 }
-
-const rate = (n: number, of: number) => (of === 0 ? undefined : `${((n / of) * 100).toFixed(1)}%`);
 
 function Metric({ label, value, note }: { label: string; value: string; note?: string }) {
   return (

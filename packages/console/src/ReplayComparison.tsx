@@ -20,6 +20,14 @@ interface Lift {
 
 const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 
+/**
+ * The parts of a spec a replay can actually observe. Replay re-derives evidence,
+ * scores and routes a finished transcript — it never sends a message — so a
+ * change to pinned text, the persona or the owner cannot move its numbers, and
+ * paying to discover that is a waste.
+ */
+const AFFECTS_REPLAY = ["evidence", "scoring", "routing", "objective", "policy"];
+
 const COHORTS = [50, 200, 500, 1000, 2000];
 const DEFAULT_COHORT = 200;
 
@@ -43,6 +51,7 @@ export function ReplayComparison(
 
   const [lift, setLift] = useState<Lift | null>(null);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
+  const [inert, setInert] = useState(false);
   const [n, setN] = useState(DEFAULT_COHORT);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,9 +61,18 @@ export function ReplayComparison(
     if (!a || !b) return;
     setLift(null); setError(null);
     void (async () => {
-      const r = await fetch(`/api/journeys/${encodeURIComponent(journey)}/replay-estimate` +
-                            `?a=${a}&b=${b}&n=${n}`);
-      if (r.ok) setEstimate(await r.json());
+      const j = encodeURIComponent(journey);
+      const [est, diff] = await Promise.all([
+        fetch(`/api/journeys/${j}/replay-estimate?a=${a}&b=${b}&n=${n}`),
+        fetch(`/api/journeys/${j}/diff?a=${a}&b=${b}`),
+      ]);
+      if (est.ok) setEstimate(await est.json());
+      // Whether anything changed that a replay could possibly observe. Asking
+      // costs one free request; discovering it costs a real replay.
+      if (diff.ok) {
+        const changes = (await diff.json()).changes as Array<{ path: string }>;
+        setInert(!changes.some((c) => AFFECTS_REPLAY.some((p) => c.path.startsWith(p))));
+      }
     })();
   }, [journey, a, b, n]);
 
@@ -92,8 +110,17 @@ export function ReplayComparison(
         </label>
       </div>
 
+      {inert && (
+        <div className="alert warn">
+          Nothing between v{a} and v{b} changes evidence, scoring, routing, the objective or
+          policy — so a replay can only report no difference. Replay re-derives a finished
+          transcript; it never sends a message, so wording and persona changes are invisible
+          to it. Try Simulate for those, or pick two versions that differ.
+        </div>
+      )}
+
       {/* A screen that can spend money must say so before it does. */}
-      {estimate && (
+      {estimate && !inert && (
         <p className="muted">
           {estimate.reused.toLocaleString()} of {estimate.leads.toLocaleString()} already
           carry their evidence and cost nothing.{" "}
@@ -106,7 +133,7 @@ export function ReplayComparison(
         </p>
       )}
 
-      <button className="btn" disabled={busy || !a || !b} onClick={() => void run()}>
+      <button className="btn" disabled={busy || !a || !b || inert} onClick={() => void run()}>
         {busy ? "Replaying…" : `Replay v${a} against v${b}`}
       </button>
     </>

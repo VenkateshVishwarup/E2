@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { money } from "./format.js";
 
 interface EvidenceView {
   field: string; required: boolean; value: unknown;
@@ -163,8 +164,8 @@ export function ChatTab({ journey }: { journey: string }) {
                 <tr>
                   <td>model cost</td>
                   <td>{state.modelCost === 0
-                    ? <span className="muted">₹0 — no model call</span>
-                    : `₹${(state.modelCost / 100).toFixed(2)}`}</td>
+                    ? <span className="muted">no model call</span>
+                    : money(state.modelCost, state.currency)}</td>
                 </tr>
               </tbody>
             </table>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { money } from "./format.js";
 
 interface Totals {
   leads: number;
@@ -26,16 +27,9 @@ interface Report {
   caveats: string[];
 }
 
-/** Amounts are integer minor units the whole way through. */
-const money = (v: number | null | undefined, currency: string) =>
-  v === null || v === undefined
-    ? "—"
-    : new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 0 })
-        .format(v / 100);
-
 /** An undefined ratio, not an infinite one, when nothing was earned. */
 const perOutcome = (cost: number, count: number, currency: string) =>
-  count === 0 ? "—" : money(Math.round(cost / count), currency);
+  count === 0 ? "—" : money(cost / count, currency);
 
 function flatten(nodes: Node[], depth = 0): Array<{ node: Node; depth: number }> {
   return nodes.flatMap((node) => [{ node, depth }, ...flatten(node.children, depth + 1)]);
