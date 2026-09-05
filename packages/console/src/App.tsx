@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./styles.css";
 import { Overview } from "./Overview.js";
 import { JourneyEditor } from "./JourneyEditor.js";
@@ -12,6 +12,8 @@ import { CopilotTab } from "./CopilotTab.js";
 import { useVersions } from "./useVersions.js";
 import { Roadmap } from "./Roadmap.js";
 import { item } from "./roadmap-data.js";
+import { Unlock } from "./Unlock.js";
+import { LOCKED } from "./auth.js";
 
 const JOURNEY = "mba-admissions-qualification";
 
@@ -30,7 +32,7 @@ const SECTIONS = [
   {
     name: "Performance",
     caption: "What your agent is actually doing",
-    tabs: ["Overview", "Insights", "ROI", "Copilot"],
+    tabs: ["Overview", "Findings", "ROI", "Copilot"],
   },
   {
     name: "Agent",
@@ -44,7 +46,7 @@ const SECTIONS = [
   },
   {
     name: "Roadmap",
-    caption: "What Elevate does not do yet",
+    caption: "What Elevate does not do yet, and what already underpins it",
     tabs: ["Roadmap"],
   },
 ] as const;
@@ -56,7 +58,16 @@ export function App() {
   // you to the next action when there is nothing to show yet.
   const [tab, setTab] = useState<Tab>("Overview");
   const [published, setPublished] = useState(0);
+  const [locked, setLocked] = useState(false);
   const versions = useVersions(JOURNEY, published);
+
+  // Any 401 anywhere puts the whole console behind the token prompt, rather
+  // than leaving one screen broken and the rest looking fine.
+  useEffect(() => {
+    const onLocked = () => setLocked(true);
+    window.addEventListener(LOCKED, onLocked);
+    return () => window.removeEventListener(LOCKED, onLocked);
+  }, []);
 
   const section = SECTIONS.find((s) => (s.tabs as readonly string[]).includes(tab))!;
 
@@ -86,7 +97,7 @@ export function App() {
       </nav>
 
       <div className="tabs" role="tablist">
-        {section.tabs.map((t) => (
+        {section.tabs.length > 1 && section.tabs.map((t) => (
           <button key={t} className="tab" role="tab"
                   aria-selected={tab === t} onClick={() => setTab(t as Tab)}>
             {t}
@@ -95,20 +106,22 @@ export function App() {
         <span className="section-caption muted">{section.caption}</span>
       </div>
 
-      {tab === "Overview" && (
+      {locked && <Unlock onUnlocked={() => { setLocked(false); setPublished((n) => n + 1); }} />}
+
+      {!locked && tab === "Overview" && (
         <Overview journey={JOURNEY} versions={versions} onGo={(t) => setTab(t as Tab)} />
       )}
-      {tab === "Journey" && (
+      {!locked && tab === "Journey" && (
         <JourneyEditor journey={JOURNEY} onPublished={() => setPublished((n) => n + 1)} />
       )}
-      {tab === "Chat" && <ChatTab key={published} journey={JOURNEY} />}
-      {tab === "Simulate" && <SimulateRun journey={JOURNEY} versions={versions} />}
-      {tab === "Compare" && <Scoreboard journey={JOURNEY} versions={versions} />}
-      {tab === "Replay" && <ReplayComparison journey={JOURNEY} versions={versions} />}
-      {tab === "Insights" && <Insights journey={JOURNEY} />}
-      {tab === "ROI" && <Roi journey={JOURNEY} />}
-      {tab === "Copilot" && <CopilotTab journey={JOURNEY} />}
-      {tab === "Roadmap" && <Roadmap />}
+      {!locked && tab === "Chat" && <ChatTab key={published} journey={JOURNEY} />}
+      {!locked && tab === "Simulate" && <SimulateRun journey={JOURNEY} versions={versions} />}
+      {!locked && tab === "Compare" && <Scoreboard journey={JOURNEY} versions={versions} />}
+      {!locked && tab === "Replay" && <ReplayComparison journey={JOURNEY} versions={versions} />}
+      {!locked && tab === "Findings" && <Insights journey={JOURNEY} />}
+      {!locked && tab === "ROI" && <Roi journey={JOURNEY} />}
+      {!locked && tab === "Copilot" && <CopilotTab journey={JOURNEY} />}
+      {!locked && tab === "Roadmap" && <Roadmap />}
     </main>
   );
 }

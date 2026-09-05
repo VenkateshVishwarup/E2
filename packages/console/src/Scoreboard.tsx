@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { defaultPair } from "./useVersions.js";
 import { VersionPicker } from "./VersionPicker.js";
+import { useLimits } from "./useVersions.js";
 
 interface Board {
   a: { target: string; quality: { qualifiedRate: number; meanCompleteness: number } };
@@ -21,6 +22,8 @@ const VERDICT_TEXT: Record<Board["verdict"], string> = {
 };
 
 export function Scoreboard({ journey, versions }: { journey: string; versions: number[] }) {
+  const { maxCohort } = useLimits();
+  const cohort = Math.min(200, maxCohort);
   const [a, setA] = useState(0);
   const [b, setB] = useState(0);
   useEffect(() => {
@@ -37,7 +40,7 @@ export function Scoreboard({ journey, versions }: { journey: string; versions: n
     try {
       const r = await fetch("/api/compare", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ journey, a, b, n: 200 }),
+        body: JSON.stringify({ journey, a, b, n: cohort }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
       setBoard(await r.json());
@@ -48,7 +51,7 @@ export function Scoreboard({ journey, versions }: { journey: string; versions: n
   return (
     <>
       <p className="muted">
-        The same 200 personas meet both versions, so the comparison is paired.
+        {"The same "}{cohort}{" personas meet both versions, so the comparison is paired."}
       </p>
       <div className="pickers">
         <VersionPicker label="A" versions={versions} value={a} onChange={(v) => { setA(v); setBoard(null); }} exclude={b} disabled={busy} />

@@ -79,7 +79,7 @@ The console has four sections, ordered by where you land and where you stay:
 
 | Section | Screens | |
 |---|---|---|
-| **Performance** | Overview · Insights · ROI · Copilot | what the agent is actually doing — the default view |
+| **Performance** | Overview · Findings · ROI · Copilot | what the agent is actually doing — the default view |
 | **Agent** | Journey · Chat | define it, and talk to it |
 | **Experiments** | Simulate · Compare · Replay | try a change before it meets real traffic |
 | **Roadmap** | | what Elevate does not do yet |
@@ -242,6 +242,19 @@ npm run simulate:demo    # sol for the agent and judge, luna for personas
 
 Reasoning effort, not prompt caching, is the cost lever: on a real call output runs roughly
 25× input, so disabling caching entirely costs about 10%.
+
+---
+
+## Deploying
+
+The console is a static bundle and the API is one serverless function wrapping the same
+Fastify app that runs locally — nothing is forked for production. See
+[`docs/DEPLOY.md`](docs/DEPLOY.md) for Vercel and Neon, including the two settings people
+get wrong: use Neon's **pooled** connection string, and set `MAX_COHORT` to something the
+host's function timeout can actually finish.
+
+Leaving `OPENAI_API_KEY` unset is a legitimate way to deploy: everything runs on the
+deterministic extractor, every number stays real, and the deployment cannot cost anything.
 
 ---
 

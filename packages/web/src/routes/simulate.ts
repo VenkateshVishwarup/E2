@@ -1,14 +1,26 @@
 import type { FastifyInstance } from "fastify";
 import { statusFor, type ServerDeps } from "../deps.js";
 
-/** One request must not be able to start a five-figure model bill. */
-const MAX_COHORT = 2000;
+/**
+ * One request must not be able to start a five-figure model bill — and on a
+ * serverless host it must also finish inside the platform's function timeout.
+ * Vercel's Hobby ceiling is 60s, which a 200-persona run does not fit, so the
+ * deployment lowers this rather than letting runs die half-written.
+ */
+const MAX_COHORT = Number(process.env.MAX_COHORT ?? 2000);
 
 function badCohort(n: unknown): boolean {
   return !Number.isInteger(n) || (n as number) < 1 || (n as number) > MAX_COHORT;
 }
 
 export function registerSimulateRoutes(app: FastifyInstance, deps: ServerDeps): void {
+  // The console reads this rather than hardcoding a size that the host will
+  // then kill. A limit the client cannot see is a limit the client will exceed.
+  app.get("/api/limits", async () => ({
+    maxCohort: MAX_COHORT,
+    offline: deps.offline,
+  }));
+
   app.post<{ Body: { journey?: unknown; version?: unknown; n?: unknown; seed?: unknown } }>(
     "/api/simulate",
     async (req, reply) => {

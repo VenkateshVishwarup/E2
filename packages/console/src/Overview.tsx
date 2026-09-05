@@ -102,7 +102,7 @@ export function Overview(
               <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>n = {f.n.toLocaleString()}</div>
             </div>
           ))}
-          <button className="btn" onClick={() => onGo("Insights")}>
+          <button className="btn" onClick={() => onGo("Findings")}>
             All {insights.findings.length} findings
           </button>
         </>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { VersionPicker } from "./VersionPicker.js";
+import { useLimits } from "./useVersions.js";
 
 interface Alert { id: string; severity: "warn" | "critical"; message: string }
 interface Quality {
@@ -19,6 +20,8 @@ const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 interface SpecWarning { code: string; message: string }
 
 export function SimulateRun({ journey, versions }: { journey: string; versions: number[] }) {
+  const { maxCohort } = useLimits();
+  const cohort = Math.min(200, maxCohort);
   const [version, setVersion] = useState(0);
   useEffect(() => { if (versions[0] !== undefined) setVersion(versions[0]); }, [versions]);
 
@@ -72,8 +75,8 @@ export function SimulateRun({ journey, versions }: { journey: string; versions: 
         </div>
       )}
 
-      <button className="btn" disabled={busy || !version} onClick={() => void go(200)}>
-        {busy ? "Simulating…" : `Simulate 200 leads through v${version || "?"}`}
+      <button className="btn" disabled={busy || !version} onClick={() => void go(cohort)}>
+        {busy ? "Simulating…" : `Simulate ${cohort} leads through v${version || "?"}`}
       </button>
 
       {error && <p className="err">Simulation failed: {error}</p>}

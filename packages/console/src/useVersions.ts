@@ -27,3 +27,19 @@ export function defaultPair(versions: number[]): { a: number; b: number } | null
   if (versions.length < 2) return null;
   return { a: versions[1]!, b: versions[0]! };
 }
+
+export interface Limits { maxCohort: number; offline: boolean }
+
+/** What the server will actually accept, so a run is never sized to fail. */
+export function useLimits(): Limits {
+  const [limits, setLimits] = useState<Limits>({ maxCohort: 200, offline: true });
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await fetch("/api/limits");
+        if (r.ok) setLimits(await r.json());
+      } catch { /* keep the conservative default */ }
+    })();
+  }, []);
+  return limits;
+}

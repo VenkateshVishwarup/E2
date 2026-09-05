@@ -382,6 +382,30 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/limits:
+    get:
+      operationId: getLimits
+      tags: [Operations]
+      summary: What this deployment will accept
+      description: |
+        A limit the client cannot see is a limit the client will exceed. Cohort sizes
+        differ by host — a serverless function has a wall-clock ceiling that a long-lived
+        server does not — so the console reads the ceiling rather than hardcoding a size
+        the host will then kill mid-run.
+      responses:
+        "200":
+          description: The deployment's operating limits.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Limits"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/simulate:
     post:
       operationId: simulateCohort
@@ -1490,6 +1514,25 @@ components:
         type: number
         format: double
       example: [0.023, 0.038]
+
+    Limits:
+      type: object
+      required: [maxCohort, offline]
+      additionalProperties: false
+      properties:
+        maxCohort:
+          type: integer
+          minimum: 1
+          description: Largest simulated or compared cohort this deployment will run.
+          example: 60
+        offline:
+          type: boolean
+          description: |
+            True when no model credential is configured, so nothing here can spend.
+          example: false
+      example:
+        maxCohort: 60
+        offline: false
 
     SimulateRequest:
       type: object
