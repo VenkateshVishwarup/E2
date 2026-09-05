@@ -142,6 +142,7 @@ async function main() {
     "  decision_maker:\n    type: enum[self, parent, employer]\n    required: true",
   );
   await reseedVersion(registry, V5);
+  await registry.promote(JOURNEY, 5);
   const changes = await registry.diff(JOURNEY, 4, 5);
 
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;

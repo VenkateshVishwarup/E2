@@ -56,7 +56,7 @@ let copilotAsk: ReturnType<typeof vi.fn>;
 
 beforeAll(async () => { pool = createPool(URL); await migrate(pool); });
 beforeEach(async () => {
-  await pool.query("TRUNCATE journey_versions");
+  await pool.query("TRUNCATE journey_versions CASCADE");
   const registry = new JourneyRegistry(pool, "t1");
   await registry.publish(V3);
   await registry.publish(V4);

@@ -20,7 +20,9 @@
     "roi": "tsx scripts/close-the-loop.ts",
     "roi:demo": "MODEL_PROFILE=demo tsx scripts/close-the-loop.ts",
     "db:migrate:remote": "tsx scripts/migrate-remote.ts",
-    "seed:remote": "tsx scripts/close-the-loop.ts"
+    "seed:remote": "tsx scripts/close-the-loop.ts",
+    "okf:bundle": "tsx scripts/bundle-okf.ts",
+    "build:console": "npm run okf:bundle && npm run build -w @midfunnel/console"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",

@@ -11,6 +11,8 @@ import { Insights } from "./Insights.js";
 import { CopilotTab } from "./CopilotTab.js";
 import { useVersions } from "./useVersions.js";
 import { Roadmap } from "./Roadmap.js";
+import { Architecture } from "./Architecture.js";
+import { Knowledge } from "./Knowledge.js";
 import { item } from "./roadmap-data.js";
 import { Unlock } from "./Unlock.js";
 import { LOCKED } from "./auth.js";
@@ -46,8 +48,8 @@ const SECTIONS = [
   },
   {
     name: "Roadmap",
-    caption: "What Elevate does not do yet, and what already underpins it",
-    tabs: ["Roadmap"],
+    caption: "What E2 does not do yet, and what already underpins it",
+    tabs: ["Roadmap", "Architecture", "Knowledge"],
   },
 ] as const;
 
@@ -74,7 +76,7 @@ export function App() {
   return (
     <main className="wrap">
       <header className="masthead">
-        <h1>Elevate</h1>
+        <h1>E2</h1>
         {/* One journey today. The registry is keyed by journey already; the
             selector is what is missing, so it is shown rather than implied. */}
         <select className="journey-select" value={JOURNEY} disabled
@@ -122,6 +124,8 @@ export function App() {
       {!locked && tab === "ROI" && <Roi journey={JOURNEY} />}
       {!locked && tab === "Copilot" && <CopilotTab journey={JOURNEY} />}
       {!locked && tab === "Roadmap" && <Roadmap />}
+      {!locked && tab === "Architecture" && <Architecture />}
+      {!locked && tab === "Knowledge" && <Knowledge />}
     </main>
   );
 }

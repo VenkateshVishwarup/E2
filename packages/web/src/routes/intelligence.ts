@@ -77,6 +77,35 @@ export function registerIntelligenceRoutes(app: FastifyInstance, deps: ServerDep
     },
   );
 
+  app.get<{ Params: { journey: string } }>(
+    "/api/journeys/:journey/live",
+    async (req, reply) => {
+      try {
+        const version = await deps.registry.liveVersion(req.params.journey);
+        if (version === null) return reply.code(404).send({ error: `journey not found: ${req.params.journey}` });
+        return { journey: req.params.journey, version };
+      } catch (err) {
+        return reply.code(statusFor(err)).send({ error: (err as Error).message });
+      }
+    },
+  );
+
+  app.post<{ Params: { journey: string }; Body: { version?: unknown } }>(
+    "/api/journeys/:journey/promote",
+    async (req, reply) => {
+      const version = req.body?.version;
+      if (!Number.isInteger(version)) {
+        return reply.code(400).send({ error: "version (integer) is required" });
+      }
+      try {
+        await deps.registry.promote(req.params.journey, version as number);
+        return { journey: req.params.journey, version, promotedAt: new Date().toISOString() };
+      } catch (err) {
+        return reply.code(statusFor(err)).send({ error: (err as Error).message });
+      }
+    },
+  );
+
   // Lint arbitrary YAML that has not been published. This is what lets the
   // editor show problems while someone types rather than after they publish.
   app.post<{ Body: { yaml?: unknown } }>(

@@ -42,7 +42,7 @@ let pool: Pool; let app: ReturnType<typeof buildServer>;
 
 beforeAll(async () => { pool = createPool(URL); await migrate(pool); });
 beforeEach(async () => {
-  await pool.query("TRUNCATE journey_versions");
+  await pool.query("TRUNCATE journey_versions CASCADE");
   const registry = new JourneyRegistry(pool, "t1");
   await registry.publish(V4);
   await registry.publish(V5);

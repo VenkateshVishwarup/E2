@@ -1,4 +1,4 @@
-# Deploying Elevate to Vercel
+# Deploying E2 to Vercel
 
 The console is a static bundle; the API is one serverless function wrapping the same
 Fastify app that runs locally. Nothing is forked for production — `api/index.ts` builds the

@@ -1,4 +1,4 @@
-const KEY = "elevate.api_token";
+const KEY = "e2.api_token";
 
 export const storedToken = (): string | null => {
   try { return localStorage.getItem(KEY); } catch { return null; }
@@ -10,7 +10,7 @@ export function setToken(token: string | null): void {
   } catch { /* private browsing: the token simply does not persist */ }
 }
 
-export const LOCKED = "elevate:locked";
+export const LOCKED = "e2:locked";
 
 /**
  * Attaches the API token to every call, and raises an event when the server

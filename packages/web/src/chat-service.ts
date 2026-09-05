@@ -216,9 +216,11 @@ export class ChatService {
       const allocator = new TrafficAllocator([{ source: opts.journey, arms }]);
       return Number(allocator.allocate(opts.journey, randomUUID()));
     }
-    const versions = await this.registry.list(opts.journey);
-    if (versions.length === 0) throw new Error(`journey not found: ${opts.journey}`);
-    return versions[0]!;
+    // Default traffic meets the LIVE version, not the newest published one.
+    // A version you published to try is not a version you have chosen to ship.
+    const live = await this.registry.liveVersion(opts.journey);
+    if (live === null) throw new Error(`journey not found: ${opts.journey}`);
+    return live;
   }
 }
 

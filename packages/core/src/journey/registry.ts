@@ -29,6 +29,14 @@ export class JourneyRegistry {
        VALUES ($1,$2,$3,$4,$5)`,
       [this.tenantId, spec.journey, spec.version, yamlText, JSON.stringify(spec)],
     );
+    // The first version of a journey goes live on publish: there is nothing to
+    // choose between, and a journey with no live version serves nobody. Every
+    // version after it has to be promoted deliberately.
+    await this.pool.query(
+      `INSERT INTO journey_live (tenant_id, journey, version)
+       VALUES ($1,$2,$3) ON CONFLICT (tenant_id, journey) DO NOTHING`,
+      [this.tenantId, spec.journey, spec.version],
+    );
     return spec;
   }
 
@@ -121,6 +129,41 @@ export class JourneyRegistry {
     const versions = await this.list(journey);
     if (versions.length === 0) throw new Error(`journey not found: ${journey}`);
     return this.get(journey, versions[0]!);
+  }
+
+  /**
+   * The version that answers by default.
+   *
+   * Distinct from the newest one, and that distinction is the point: publishing
+   * makes a version exist so it can be tried, promoting makes it the one real
+   * traffic meets. Collapsing the two left no way to test a change before it
+   * was already serving.
+   */
+  async liveVersion(journey: string): Promise<number | null> {
+    const { rows } = await this.pool.query<{ version: number }>(
+      `SELECT version FROM journey_live WHERE tenant_id = $1 AND journey = $2`,
+      [this.tenantId, journey],
+    );
+    return rows[0] ? Number(rows[0].version) : null;
+  }
+
+  async live(journey: string): Promise<JourneySpec> {
+    const version = await this.liveVersion(journey);
+    if (version === null) throw new Error(`journey not found: ${journey}`);
+    return this.get(journey, version);
+  }
+
+  /** Point default traffic at a published version. Reversible by promoting back. */
+  async promote(journey: string, version: number): Promise<void> {
+    // Fails loudly rather than pointing live at something that does not exist.
+    await this.get(journey, version);
+    await this.pool.query(
+      `INSERT INTO journey_live (tenant_id, journey, version)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (tenant_id, journey)
+       DO UPDATE SET version = EXCLUDED.version, promoted_at = now()`,
+      [this.tenantId, journey, version],
+    );
   }
 
   /**

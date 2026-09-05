@@ -198,6 +198,9 @@ async function main() {
   await reseedVersion(registry, V3);
   await reseedVersion(registry, V4);
   await reseedVersion(registry, V5);
+  // v4 cannot qualify anyone (its required evidence tops out below its own
+  // threshold); v5 is the fix. Point live at the one worth serving.
+  await registry.promote(JOURNEY, 5);
   const specs = { 3: parseSpec(V3), 4: parseSpec(V4) } as const;
 
   // ── Run the journey over the cohort and record what happened ─────────────

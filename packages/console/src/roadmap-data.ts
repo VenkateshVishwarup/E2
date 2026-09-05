@@ -1,5 +1,5 @@
 /**
- * What Elevate does not do yet.
+ * What E2 does not do yet.
  *
  * Kept in one place and shown in the product rather than hidden, because a
  * demo that quietly implies a missing capability is worse than one that names

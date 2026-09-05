@@ -1,7 +1,7 @@
 openapi: 3.0.3
 
 info:
-  title: Elevate API
+  title: E2 API
   version: 0.3.0
   description: |
     The read and control surface over the event spine.
@@ -29,7 +29,7 @@ info:
 servers:
   - url: http://localhost:3000
     description: Local development
-  - url: https://api.elevate.example.com
+  - url: https://api.e2.example.com
     description: Production
 
 security:
@@ -160,6 +160,69 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SpecDiff"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/journeys/{journey}/live:
+    get:
+      operationId: getLiveVersion
+      tags: [Journeys]
+      summary: Which version answers by default
+      description: |
+        Distinct from the newest published version, and that distinction is the point:
+        publishing makes a version exist so it can be tried, promoting makes it the one
+        real traffic meets. A chat session with no version named gets this one.
+      parameters:
+        - $ref: "#/components/parameters/JourneyName"
+      responses:
+        "200":
+          description: The live version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/journeys/{journey}/promote:
+    post:
+      operationId: promoteJourneyVersion
+      tags: [Journeys]
+      summary: Point default traffic at a published version
+      description: |
+        Shipping, as a separate act from publishing. The version must already be
+        published; this only moves the pointer, so it is instant and reversible — promote
+        the previous version back and traffic returns to it on the next session.
+
+        Sessions already in flight keep the version they started on. A conversation whose
+        agent changed mid-way would be neither version's result.
+      parameters:
+        - $ref: "#/components/parameters/JourneyName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PromoteRequest"
+      responses:
+        "200":
+          description: Promoted. New sessions get this version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveVersion"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1171,6 +1234,40 @@ components:
           example: Which programme are you considering?
         state:
           $ref: "#/components/schemas/ChatState"
+
+    LiveVersion:
+      type: object
+      required: [journey, version]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          example: mba-admissions-qualification
+        version:
+          type: integer
+          minimum: 1
+          example: 5
+        promotedAt:
+          type: string
+          format: date-time
+          description: Present on the response to a promotion.
+          example: "2026-09-05T18:22:41.006Z"
+      example:
+        journey: mba-admissions-qualification
+        version: 5
+
+    PromoteRequest:
+      type: object
+      required: [version]
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: A version that is already published.
+          example: 7
+      example:
+        version: 7
 
     JourneySource:
       type: object

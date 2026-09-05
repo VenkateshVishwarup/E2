@@ -211,3 +211,29 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   vertical-align: middle; margin-left: 6px;
 }
 .finding-head strong { font-size: 14px; }
+
+.diagram { margin: 18px 0 10px; }
+.c4 { width: 100%; height: auto; max-width: 820px; }
+.c4-box { fill: var(--card); stroke: var(--line); stroke-width: 1.5; }
+.c4-box.system { fill: var(--fg); stroke: var(--fg); }
+.c4-box.system + .c4-title { fill: var(--bg); }
+.c4-box.db { stroke: var(--observed); stroke-width: 2; }
+.c4-box.api { stroke: var(--modelled); stroke-width: 2; }
+.c4-box.ext { stroke-dasharray: 4 3; }
+.c4-title { font-size: 13px; font-weight: 600; fill: var(--fg); }
+.c4-box.system ~ .c4-title { fill: var(--bg); }
+.c4-sub { font-size: 10.5px; fill: var(--muted); }
+.c4-note { font-size: 10px; fill: var(--muted); }
+.c4-line { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.c4-arrowhead { fill: var(--line); }
+.okf-toc { columns: 2; column-gap: 24px; margin: 0; padding-left: 18px; }
+@media (max-width: 700px) { .okf-toc { columns: 1; } }
+.okf-toc li { margin: 4px 0; break-inside: avoid; }
+
+.okf p { line-height: 1.6; max-width: 76ch; }
+.okf h2 { margin-top: 28px; }
+.okf ul { max-width: 76ch; line-height: 1.6; }
+.okf-link {
+  border: 0; background: none; padding: 0; font: inherit; cursor: pointer;
+  color: var(--observed); text-decoration: underline; text-underline-offset: 2px;
+}

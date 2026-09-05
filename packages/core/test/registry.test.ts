@@ -17,7 +17,7 @@ let pool: Pool;
 let reg: JourneyRegistry;
 
 beforeAll(async () => { pool = createPool(URL); await migrate(pool); });
-beforeEach(async () => { await pool.query("TRUNCATE journey_versions"); reg = new JourneyRegistry(pool, "t1"); });
+beforeEach(async () => { await pool.query("TRUNCATE journey_versions CASCADE"); reg = new JourneyRegistry(pool, "t1"); });
 afterAll(async () => { await pool.end(); });
 
 describe("JourneyRegistry", () => {
@@ -91,5 +91,39 @@ describe("ensurePublished", () => {
     const tampered = V4.replace("max_turns: 14", "max_turns: 20");
     await expect(reg.ensurePublished(tampered))
       .rejects.toThrow(/already published with different content/);
+  });
+});
+
+describe("publishing versus going live", () => {
+  it("makes the first version live, because a journey with none serves nobody", async () => {
+    await reg.publish(V4);
+    expect(await reg.liveVersion("mba-admissions-qualification")).toBe(4);
+  });
+
+  it("does not make a later version live on publish", async () => {
+    // The whole point: a version you published in order to try it is not a
+    // version you have chosen to ship.
+    await reg.publish(V4);
+    await reg.publish(V4.replace("version: 4", "version: 5"));
+    expect(await reg.liveVersion("mba-admissions-qualification")).toBe(4);
+  });
+
+  it("promotes, and promotes back", async () => {
+    await reg.publish(V4);
+    await reg.publish(V4.replace("version: 4", "version: 5"));
+    await reg.promote("mba-admissions-qualification", 5);
+    expect((await reg.live("mba-admissions-qualification")).version).toBe(5);
+    await reg.promote("mba-admissions-qualification", 4);
+    expect((await reg.live("mba-admissions-qualification")).version).toBe(4);
+  });
+
+  it("refuses to point live at a version that does not exist", async () => {
+    await reg.publish(V4);
+    await expect(reg.promote("mba-admissions-qualification", 9)).rejects.toThrow(/not found/);
+    expect(await reg.liveVersion("mba-admissions-qualification")).toBe(4);
+  });
+
+  it("reports no live version for a journey that has none", async () => {
+    expect(await reg.liveVersion("no-such-journey")).toBeNull();
   });
 });

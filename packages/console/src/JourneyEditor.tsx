@@ -11,6 +11,7 @@ interface LintResult {
 export function JourneyEditor({ journey, onPublished }:
   { journey: string; onPublished: () => void }) {
   const [versions, setVersions] = useState<number[]>([]);
+  const [liveVersion, setLiveVersion] = useState<number | null>(null);
   const [loaded, setLoaded] = useState<number | null>(null);
   const [yaml, setYaml] = useState("");
   const [lint, setLint] = useState<LintResult | null>(null);
@@ -35,12 +36,20 @@ export function JourneyEditor({ journey, onPublished }:
     setPristine(body.yaml);
   };
 
+  const refresh = async (): Promise<number[]> => {
+    const j = encodeURIComponent(journey);
+    const [v, l] = await Promise.all([
+      fetch(`/api/journeys/${j}/versions`), fetch(`/api/journeys/${j}/live`),
+    ]);
+    const list = v.ok ? ((await v.json()).versions as number[]) : [];
+    setVersions(list);
+    setLiveVersion(l.ok ? ((await l.json()).version as number) : null);
+    return list;
+  };
+
   useEffect(() => {
     void (async () => {
-      const r = await fetch(`/api/journeys/${encodeURIComponent(journey)}/versions`);
-      if (!r.ok) return;
-      const list = (await r.json()).versions as number[];
-      setVersions(list);
+      const list = await refresh();
       if (list[0] !== undefined) await load(list[0]);
     })();
     // `load` is stable for a given journey; re-running on it would loop.
@@ -75,10 +84,11 @@ export function JourneyEditor({ journey, onPublished }:
       });
       const body = await r.json();
       if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
-      setNotice(`Published v${body.version}. It is live — start a chat and you will talk to it.`);
+      setNotice(
+        `Published v${body.version}. It is not live yet — try it on the Chat tab by ` +
+        `selecting v${body.version}, then promote it when you are happy.`);
       setPristine(yaml);
-      const list = await fetch(`/api/journeys/${encodeURIComponent(journey)}/versions`);
-      if (list.ok) setVersions((await list.json()).versions);
+      await refresh();
       setLoaded(body.version);
       onPublished();
     } catch (e) { setError((e as Error).message); }
@@ -87,12 +97,34 @@ export function JourneyEditor({ journey, onPublished }:
 
   const alreadyPublished = lint?.version !== undefined && versions.includes(lint.version);
   const dirty = yaml !== "" && yaml !== pristine;
+  const isLive = loaded !== null && loaded === liveVersion;
+  const canPromote = alreadyPublished && !dirty && !isLive;
+
+  const promote = async () => {
+    if (loaded === null) return;
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const r = await fetch(`/api/journeys/${encodeURIComponent(journey)}/promote`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: loaded }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
+      setNotice(`v${loaded} is live. New conversations get it; ones already running keep the version they started on.`);
+      await refresh();
+      onPublished();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
 
   return (
     <>
       <p className="muted">
-        The journey is a typed contract, not a prompt. Publishing is deployment — there is
-        no separate deploy step, and the next chat session is served by what you publish.
+        The journey is a typed contract, not a prompt. <strong>Publishing is not
+        shipping:</strong> a published version exists and can be talked to on the Chat tab,
+        but real traffic keeps meeting the live one until you promote it. So the loop is
+        edit → publish → try it → make it live, and rolling back is promoting the previous
+        version.
       </p>
 
       {/* A dropdown whose options read "Load v4" looks like a button you have
@@ -106,7 +138,12 @@ export function JourneyEditor({ journey, onPublished }:
         <button className="btn" onClick={bumpVersion} disabled={busy}>Bump version</button>
         <button className="btn" onClick={() => void publish()}
                 disabled={busy || !lint?.valid || alreadyPublished}>
-          {busy ? "Publishing…" : `Publish${lint?.version ? ` v${lint.version}` : ""}`}
+          {busy ? "Working…" : `Publish${lint?.version ? ` v${lint.version}` : ""}`}
+        </button>
+        {/* Shipping is a second, deliberate act. Publishing only makes a
+            version exist so you can try it. */}
+        <button className="btn" onClick={() => void promote()} disabled={busy || !canPromote}>
+          {isLive ? `v${loaded} is live` : `Make v${loaded ?? "?"} live`}
         </button>
       </div>
 
@@ -114,8 +151,10 @@ export function JourneyEditor({ journey, onPublished }:
         {dirty
           ? <>Editing <strong>v{loaded}</strong> with unsaved changes
               {lint?.version !== loaded && lint?.version ? <> — will publish as v{lint.version}</> : null}.</>
-          : <>Showing <strong>v{loaded}</strong> exactly as published.</>}
-        {versions[0] !== undefined && <> v{versions[0]} is the version chat serves.</>}
+          : isLive
+            ? <>Showing <strong>v{loaded}</strong>, which is live.</>
+            : <>Showing <strong>v{loaded}</strong> exactly as published — <strong>not live</strong>.</>}
+        {liveVersion !== null && !isLive && <> v{liveVersion} is serving new conversations.</>}
       </p>
 
       {/* Versions are immutable, so say why the button is disabled rather than

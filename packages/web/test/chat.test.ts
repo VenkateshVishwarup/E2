@@ -28,7 +28,7 @@ let chat: ChatService;
 beforeAll(async () => { pool = createPool(URL); await migrate(pool); });
 beforeEach(async () => {
   await pool.query("TRUNCATE events");
-  await pool.query("TRUNCATE journey_versions");
+  await pool.query("TRUNCATE journey_versions CASCADE");
   store = new EventStore(pool, "t1");
   registry = new JourneyRegistry(pool, "t1");
   await registry.publish(V4);
@@ -69,8 +69,27 @@ describe("starting a session", () => {
     expect(sent.at(-1)!.payload.unresolvedVariables).toEqual(["institute"]);
   });
 
-  it("serves the latest version when none is named", async () => {
+  it("serves the LIVE version when none is named, not the newest", async () => {
+    // v4 was published first and so is live; v5 exists but has not been
+    // promoted. A version published in order to try it is not a version anyone
+    // has chosen to ship.
+    expect(await registry.liveVersion(JOURNEY)).toBe(4);
+    expect((await chat.start({ journey: JOURNEY })).state.version).toBe(4);
+  });
+
+  it("serves a published-but-not-live version on request, which is how you test one", async () => {
+    const { state } = await chat.start({ journey: JOURNEY, version: 5 });
+    expect(state.version).toBe(5);
+    // Trying it did not ship it.
+    expect(await registry.liveVersion(JOURNEY)).toBe(4);
+  });
+
+  it("follows the live pointer once a version is promoted", async () => {
+    await registry.promote(JOURNEY, 5);
     expect((await chat.start({ journey: JOURNEY })).state.version).toBe(5);
+    // And back again: promoting is reversible, which is what makes it safe.
+    await registry.promote(JOURNEY, 4);
+    expect((await chat.start({ journey: JOURNEY })).state.version).toBe(4);
   });
 
   it("writes live-scoped events that the ordinary read path can see", async () => {

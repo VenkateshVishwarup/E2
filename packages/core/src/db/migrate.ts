@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Pool } from "./client.js";
+import { createPool, type Pool } from "./client.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIR = join(HERE, "migrations");
@@ -38,4 +38,24 @@ export async function migrate(pool: Pool): Promise<string[]> {
     }
   }
   return applied;
+}
+
+
+/**
+ * CLI entry: `npm run db:migrate`.
+ *
+ * Without this the script imported the module and exited having done nothing —
+ * invisible for a long time because the tests and the seed scripts all call
+ * `migrate(pool)` directly, so the documented command was the only path that
+ * did not work.
+ */
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const url = process.env.DATABASE_URL
+    ?? "postgres://midfunnel:midfunnel@localhost:5433/midfunnel_dev";
+  const pool = createPool(url, { max: 1 });
+  const applied = await migrate(pool);
+  console.log(applied.length === 0
+    ? "already up to date"
+    : `applied ${applied.length}: ${applied.join(", ")}`);
+  await pool.end();
 }

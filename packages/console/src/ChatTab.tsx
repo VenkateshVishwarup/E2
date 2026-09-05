@@ -21,6 +21,7 @@ const SPLIT = "ab";
 
 export function ChatTab({ journey }: { journey: string }) {
   const [versions, setVersions] = useState<number[]>([]);
+  const [live, setLive] = useState<number | null>(null);
   const [choice, setChoice] = useState<string>("");
   const [state, setState] = useState<ChatState | null>(null);
   const [draft, setDraft] = useState("");
@@ -30,12 +31,17 @@ export function ChatTab({ journey }: { journey: string }) {
 
   useEffect(() => {
     void (async () => {
-      const r = await fetch(`/api/journeys/${encodeURIComponent(journey)}/versions`);
-      if (r.ok) {
-        const list = (await r.json()).versions as number[];
-        setVersions(list);
-        setChoice(String(list[0] ?? ""));
-      }
+      const j = encodeURIComponent(journey);
+      const [v, l] = await Promise.all([
+        fetch(`/api/journeys/${j}/versions`), fetch(`/api/journeys/${j}/live`),
+      ]);
+      if (!v.ok) return;
+      const list = (await v.json()).versions as number[];
+      const liveVersion = l.ok ? ((await l.json()).version as number) : null;
+      setVersions(list);
+      setLive(liveVersion);
+      // Default to what real leads meet, not to the newest thing published.
+      setChoice(String(liveVersion ?? list[0] ?? ""));
     })();
   }, [journey]);
 
@@ -60,7 +66,7 @@ export function ChatTab({ journey }: { journey: string }) {
     // An A/B split assigns deterministically per session, which is how a new
     // version takes real traffic without disturbing the one already running.
     void call("/api/chat/sessions", choice === SPLIT
-      ? { journey, split: Object.fromEntries(splitEvenly(versions.slice(0, 2))) }
+      ? { journey, split: { [String(live)]: 50, [String(candidate)]: 50 } }
       : { journey, version: Number(choice) });
   };
 
@@ -71,21 +77,32 @@ export function ChatTab({ journey }: { journey: string }) {
     void call(`/api/chat/sessions/${state.leadId}/messages`, { text });
   };
 
+  // The newest published version that is not already live — the thing you would
+  // be testing, and the other arm of a sensible A/B.
+  const candidate = versions.find((v) => v !== live) ?? null;
   const done = state?.completed || state?.escalated;
 
   return (
     <>
       <p className="muted">
-        A real conversation with the published agent. Everything it writes lands in the same
-        event log the other tabs read — which is why a chat you have here shows up in ROI.
+        A real conversation with a published agent. Pick the live version to see what leads
+        see, or a newer one to try it before you promote it. Everything it writes lands in
+        the same event log the other tabs read — which is why a chat you have here shows up
+        in ROI.
       </p>
 
       <div className="ask">
         <select className="ask-input" value={choice} disabled={busy || !!state}
                 onChange={(e) => setChoice(e.target.value)} aria-label="Version">
-          {versions.map((v) => <option key={v} value={String(v)}>v{v}</option>)}
-          {versions.length >= 2 && (
-            <option value={SPLIT}>A/B split — v{versions[0]} vs v{versions[1]}</option>
+          {versions.map((v) => (
+            <option key={v} value={String(v)}>
+              v{v}{v === live ? " — live" : ""}
+            </option>
+          ))}
+          {/* Live against the newest candidate: the split anyone actually wants,
+              rather than whichever two versions happen to be newest. */}
+          {candidate !== null && live !== null && (
+            <option value={SPLIT}>A/B — v{live} (live) vs v{candidate}</option>
           )}
         </select>
         {/* The runtime never sees the channel — it returns intents and the
@@ -144,7 +161,10 @@ export function ChatTab({ journey }: { journey: string }) {
           {/* The evidence contract filling in as you talk is the argument for
               declaring a journey rather than prompting one. */}
           <aside className="chat-side">
-            <h3 className="view-title">Evidence contract · v{state.version}</h3>
+            <h3 className="view-title">
+              Evidence contract · v{state.version}
+              {state.version === live ? " (live)" : " (testing)"}
+            </h3>
             <table>
               <tbody>
                 {state.evidence.map((e) => (
@@ -202,10 +222,3 @@ export function ChatTab({ journey }: { journey: string }) {
   );
 }
 
-/** Even weights that still sum to exactly 100. */
-function splitEvenly(versions: number[]): Array<[string, number]> {
-  const base = Math.floor(100 / versions.length);
-  return versions.map((v, i) => [
-    String(v), i === 0 ? 100 - base * (versions.length - 1) : base,
-  ]);
-}

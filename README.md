@@ -1,4 +1,4 @@
-# Elevate
+# E2
 
 An AI agent platform for mid-funnel lead qualification and nurturing, built so that every
 number it shows can be traced back to an event that actually happened.
@@ -66,11 +66,14 @@ and refused, but an unrecognised one would just produce a confident 401.
 
 ## Try it in two minutes
 
-1. **Agent → Journey** — the spec loads. Change something, press *Bump version*, press
-   *Publish*. Checks run as you type; warnings never block you.
-2. **Agent → Chat** — the version you just published is already serving. Talk to it. Watch the
-   evidence contract on the right fill in as you answer, then score and route.
-3. **Performance → ROI** — your conversation is in there, counted, with its token cost.
+1. **Agent → Journey** — the spec loads. Change something, *Bump version*, *Publish*.
+   Checks run as you type; warnings never block you.
+2. **Agent → Chat** — pick the version you just published and talk to it. It is **not
+   live** yet, so this is a rehearsal. Watch the evidence contract on the right fill in as
+   you answer, then score and route.
+3. **Agent → Journey** again — *Make it live*. Real traffic gets it from the next session,
+   and rolling back is promoting the previous version.
+4. **Performance → ROI** — your conversation is in there, counted, with its token cost.
 
 That loop is the product: author a contract, deploy it by publishing it, talk to it, and
 see what it cost against what it earned.
@@ -82,7 +85,7 @@ The console has four sections, ordered by where you land and where you stay:
 | **Performance** | Overview · Findings · ROI · Copilot | what the agent is actually doing — the default view |
 | **Agent** | Journey · Chat | define it, and talk to it |
 | **Experiments** | Simulate · Compare · Replay | try a change before it meets real traffic |
-| **Roadmap** | | what Elevate does not do yet |
+| **Roadmap** | | what E2 does not do yet |
 
 ---
 
@@ -90,7 +93,7 @@ The console has four sections, ordered by where you land and where you stay:
 
 | # | Moment | Where | Kills the objection |
 |---|---|---|---|
-| 0 | **Author and deploy** — edit the YAML, publish, and the next conversation is served by it. Publishing *is* deployment | Agent → Journey | Every deployment starts from scratch |
+| 0 | **Author, try, then ship** — edit the YAML, publish it, talk to it on Chat, then promote it. Publishing is not shipping | Agent → Journey | Every deployment starts from scratch |
 | 1 | **The money shot** — replay a real cohort through two versions, lift with a confidence interval, drill into the divergent conversations | Replay tab | *"Will customers pay more?"* |
 | 2 | **Declare, don't prompt** — change `decision_maker` from optional to required. That is the entire edit | `journeys/*.yaml`, diff endpoint | Every deployment starts from scratch |
 | 3 | **Sandbox in 60 seconds** — 500 personas against a new version before one real lead sees it | Experiments → Simulate | No way to set up a sandbox |
@@ -223,6 +226,10 @@ One deployable artifact, five packages, started by role (`ROLE=web|runtime|batch
 | `batch` | Import, replay, simulation, eval harness, traffic allocator |
 | `intelligence` | Attribution, insight engine, copilot |
 | `web` + `console` | Fastify API, the live chat loop, and the React console |
+
+The operational knowledge file — what each concept is and where it lives — is
+[`okf/`](okf/index.md), and the console renders the same files under Roadmap → Knowledge.
+C4 diagrams are under Roadmap → Architecture.
 
 Full design, decision log and roadmap:
 [`docs/superpowers/specs/2026-08-31-midfunnel-agent-platform-design.md`](docs/superpowers/specs/2026-08-31-midfunnel-agent-platform-design.md).

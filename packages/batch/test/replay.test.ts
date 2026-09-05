@@ -59,7 +59,7 @@ let pool: Pool; let store: EventStore; let registry: JourneyRegistry;
 beforeAll(async () => { pool = createPool(URL); await migrate(pool); });
 beforeEach(async () => {
   await pool.query("TRUNCATE events");
-  await pool.query("TRUNCATE journey_versions");
+  await pool.query("TRUNCATE journey_versions CASCADE");
   store = new EventStore(pool, "t1");
   registry = new JourneyRegistry(pool, "t1");
   await registry.publish(V3);
