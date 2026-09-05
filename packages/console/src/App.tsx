@@ -13,7 +13,7 @@ import { useVersions } from "./useVersions.js";
 import { Roadmap } from "./Roadmap.js";
 import { Architecture } from "./Architecture.js";
 import { Knowledge } from "./Knowledge.js";
-import { item } from "./roadmap-data.js";
+import { AgentHeader } from "./AgentHeader.js";
 import { Unlock } from "./Unlock.js";
 import { LOCKED } from "./auth.js";
 
@@ -75,17 +75,10 @@ export function App() {
 
   return (
     <main className="wrap">
+      {/* The masthead names the product. The agent is named in the section
+          where it is worked on. */}
       <header className="masthead">
         <h1>E2</h1>
-        {/* One journey today. The registry is keyed by journey already; the
-            selector is what is missing, so it is shown rather than implied. */}
-        <select className="journey-select" value={JOURNEY} disabled
-                title={item("journeys").will} aria-label="Journey">
-          <option value={JOURNEY}>{JOURNEY}</option>
-        </select>
-        <span className="soon-tag" title={item("journeys").will}>
-          more journeys soon
-        </span>
       </header>
 
       <nav className="sections" aria-label="Sections">
@@ -97,6 +90,10 @@ export function App() {
           </button>
         ))}
       </nav>
+
+      {section.name === "Agent" && !locked && (
+        <AgentHeader journey={JOURNEY} reload={published} />
+      )}
 
       <div className="tabs" role="tablist">
         {section.tabs.length > 1 && section.tabs.map((t) => (
