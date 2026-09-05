@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { VersionPicker } from "./VersionPicker.js";
+import { item } from "./roadmap-data.js";
 
 interface SpecWarning { code: string; message: string }
 interface LintResult {
@@ -151,6 +152,16 @@ export function JourneyEditor({ journey, onPublished }:
             Warnings do not block publishing. A journey may legitimately rely on optional
             evidence a lead volunteers, and the platform should not be the judge of that.
           </p>
+
+          {/* The `tools:` block is enforced but not yet connected. Say so where
+              someone is editing it, not only on the roadmap. */}
+          {yaml.includes("tools:") && (
+            <p className="muted provenance">
+              <span className="soon-tag">soon</span> Privileges under <code>tools:</code> are
+              enforced today — an unprivileged call is denied and logged — but the bindings
+              behind them are mocks. {item("bindings").will}
+            </p>
+          )}
         </aside>
       </div>
     </>

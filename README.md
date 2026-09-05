@@ -102,6 +102,24 @@ do what it claims is caught by reading the spec, not by waiting for a bad quarte
 
 ---
 
+## What it does not do yet
+
+Named in the product itself, on a **Roadmap** section, rather than left to be discovered.
+Each entry says what is already in place, because the distinction that matters is between a
+missing screen and a missing foundation — and almost all of these are the former.
+
+| | |
+|---|---|
+| **Next** | WhatsApp and voice channels · more than one journey · real CRM and calendar bindings |
+| **Planned** | Alert delivery · parallel run against an incumbent · multi-tenancy |
+| **Later** | Cross-customer benchmarks · on-premise packaging · an agent registry screen |
+
+Inline too, where you would reach for the thing: the channel selector in Chat lists WhatsApp
+and voice as coming; the masthead says one journey today; the editor says the `tools:`
+privileges are enforced but the bindings behind them are mocks.
+
+---
+
 ## What makes the numbers defensible
 
 These are the details that survive a hostile question, and they are the reason to prefer

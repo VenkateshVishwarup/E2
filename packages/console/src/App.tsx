@@ -10,6 +10,8 @@ import { Roi } from "./Roi.js";
 import { Insights } from "./Insights.js";
 import { CopilotTab } from "./CopilotTab.js";
 import { useVersions } from "./useVersions.js";
+import { Roadmap } from "./Roadmap.js";
+import { item } from "./roadmap-data.js";
 
 const JOURNEY = "mba-admissions-qualification";
 
@@ -38,6 +40,11 @@ const SECTIONS = [
     caption: "What actually happened",
     tabs: ["Overview", "Insights", "ROI", "Copilot"],
   },
+  {
+    name: "Roadmap",
+    caption: "What this does not do yet",
+    tabs: ["Roadmap"],
+  },
 ] as const;
 
 type Tab = (typeof SECTIONS)[number]["tabs"][number];
@@ -55,7 +62,15 @@ export function App() {
     <main className="wrap">
       <header className="masthead">
         <h1>Mid-Funnel Console</h1>
-        <span className="muted">{JOURNEY}</span>
+        {/* One journey today. The registry is keyed by journey already; the
+            selector is what is missing, so it is shown rather than implied. */}
+        <select className="journey-select" value={JOURNEY} disabled
+                title={item("journeys").will} aria-label="Journey">
+          <option value={JOURNEY}>{JOURNEY}</option>
+        </select>
+        <span className="soon-tag" title={item("journeys").will}>
+          more journeys soon
+        </span>
       </header>
 
       <nav className="sections" aria-label="Sections">
@@ -91,6 +106,7 @@ export function App() {
       {tab === "Insights" && <Insights journey={JOURNEY} />}
       {tab === "ROI" && <Roi journey={JOURNEY} />}
       {tab === "Copilot" && <CopilotTab journey={JOURNEY} />}
+      {tab === "Roadmap" && <Roadmap />}
     </main>
   );
 }

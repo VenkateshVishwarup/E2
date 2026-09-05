@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { money } from "./format.js";
+import { item } from "./roadmap-data.js";
 
 interface EvidenceView {
   field: string; required: boolean; value: unknown;
@@ -86,6 +87,14 @@ export function ChatTab({ journey }: { journey: string }) {
           {versions.length >= 2 && (
             <option value={SPLIT}>A/B split — v{versions[0]} vs v{versions[1]}</option>
           )}
+        </select>
+        {/* The runtime never sees the channel — it returns intents and the
+            caller delivers them — so these are a delivery gap, not a rebuild. */}
+        <select className="ask-input" style={{ maxWidth: 190 }} value="web" disabled
+                title={item("channels").will} aria-label="Channel">
+          <option value="web">Web chat</option>
+          <option>WhatsApp — soon</option>
+          <option>Voice — soon</option>
         </select>
         <button className="btn" disabled={busy || !choice} onClick={start}>
           {state ? "Start another" : "Start chat"}

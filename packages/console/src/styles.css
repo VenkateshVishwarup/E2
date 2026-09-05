@@ -198,3 +198,16 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .sev.high { color: var(--danger); border-color: var(--danger); }
 .sev.medium { color: var(--modelled); border-color: var(--modelled); }
 .sev.low { color: var(--muted); border-color: var(--line); }
+
+.journey-select {
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px;
+  background: var(--card); color: var(--muted); font: inherit; font-size: 13px;
+}
+.journey-select:disabled { opacity: 1; cursor: not-allowed; }
+.soon-tag {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  border: 1px dashed var(--line); color: var(--muted);
+  font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  vertical-align: middle; margin-left: 6px;
+}
+.finding-head strong { font-size: 14px; }
