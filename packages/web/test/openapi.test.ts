@@ -15,6 +15,7 @@ const STUB = {
   attribution: { roll: vi.fn() } as never,
   insights: { insights: vi.fn() } as never,
   copilot: { ask: vi.fn() },
+  chat: { start: vi.fn(), send: vi.fn(), state: vi.fn() },
 };
 
 interface OpenApi {

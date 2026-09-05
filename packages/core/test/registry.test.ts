@@ -71,3 +71,25 @@ describe("JourneyRegistry", () => {
     await expect(other.get("mba-admissions-qualification", 4)).rejects.toThrow(/not found/i);
   });
 });
+
+describe("ensurePublished", () => {
+  it("publishes when the version is new", async () => {
+    const { spec, created } = await reg.ensurePublished(V4);
+    expect(created).toBe(true);
+    expect(spec.version).toBe(4);
+  });
+
+  it("is a no-op for an identical republish, so reseeding is not a violation", async () => {
+    await reg.ensurePublished(V4);
+    const again = await reg.ensurePublished(V4);
+    expect(again.created).toBe(false);
+    expect(await reg.list("mba-admissions-qualification")).toEqual([4]);
+  });
+
+  it("still refuses changed content under a version that exists", async () => {
+    await reg.ensurePublished(V4);
+    const tampered = V4.replace("max_turns: 14", "max_turns: 20");
+    await expect(reg.ensurePublished(tampered))
+      .rejects.toThrow(/already published with different content/);
+  });
+});

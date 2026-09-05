@@ -2,6 +2,7 @@ import type { EventStore } from "@midfunnel/core/events/store";
 import type { EventInput, LeadState } from "@midfunnel/core/events/types";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { AgentRuntime } from "@midfunnel/runtime/step";
+import { actionsToEvents } from "@midfunnel/runtime/persist";
 import type { Persona } from "./persona.js";
 import type { Replier } from "./replier.js";
 
@@ -108,44 +109,12 @@ export class SimulationRunner {
       const state: LeadState = await this.store.fold(base.leadId);
       const actions = await this.runtime.step(spec, state, { allowFollowUp: true });
 
-      const pending: EventInput[] = [];
-      let sentText: string | null = null;
-      let escalated = false;
-      let completed = false;
-      let qualified = false;
+      // Shared with the live chat loop: a simulated conversation and a real
+      // one must produce identical events, or every downstream fold means
+      // something different for each.
+      const applied = actionsToEvents(actions, base, "simulated");
+      const { events: pending, sentText, escalated, completed, qualified } = applied;
 
-      for (const a of actions) {
-        switch (a.kind) {
-          case "send":
-            sentText = a.text;
-            pending.push({ ...base, type: "MessageSent",
-              payload: { channel: "simulated", renderedText: a.text,
-                         templateId: a.pinnedTemplate ?? null } });
-            break;
-          case "extract":
-            for (const [field, v] of Object.entries(a.evidence)) {
-              pending.push({ ...base, type: "EvidenceExtracted",
-                payload: { field, value: v.value, confidence: v.confidence } });
-            }
-            break;
-          case "score":
-            pending.push({ ...base, type: "Scored", payload: { score: a.score } });
-            break;
-          case "route":
-            pending.push({ ...base, type: "Routed",
-              payload: { decision: a.decision, target: a.target, sla: a.sla ?? null } });
-            break;
-          case "escalate":
-            escalated = true;
-            pending.push({ ...base, type: "PolicyEvaluated",
-              payload: { ruleId: a.reason, verdict: "escalate", severity: "high" } });
-            break;
-          case "complete":
-            completed = true;
-            qualified = a.qualified;
-            break;
-        }
-      }
       if (pending.length > 0) await this.store.appendMany(pending);
 
       if (escalated) return { turns, completed: false, qualified: false, escalated: true, ghosted: false };

@@ -15,6 +15,8 @@ import { OfflineCopilot } from "@midfunnel/intelligence/copilot/offline";
 import { registerRoutes } from "./routes/replay.js";
 import { registerSimulateRoutes } from "./routes/simulate.js";
 import { registerIntelligenceRoutes } from "./routes/intelligence.js";
+import { registerChatRoutes } from "./routes/chat.js";
+import { ChatService } from "./chat-service.js";
 import { registerAuth } from "./auth.js";
 import { registerSpecRoutes } from "./routes/openapi.js";
 import { LiveSimulationService, chooseReplier } from "./simulation-service.js";
@@ -50,6 +52,7 @@ export function buildServer(deps: ServerDeps, token: string | null = null): Fast
   registerRoutes(app, deps);
   registerSimulateRoutes(app, deps);
   registerIntelligenceRoutes(app, deps);
+  registerChatRoutes(app, deps);
   return app;
 }
 
@@ -100,6 +103,13 @@ export async function main(): Promise<void> {
   const copilot = credentialled
     ? new Copilot(events, registry)
     : new OfflineCopilot(events, registry);
+  // Minor units of the reporting currency per USD. Recorded on every cost
+  // event, so a later rate change cannot rewrite historical ROI.
+  const fx = {
+    currency: process.env.REPORTING_CURRENCY ?? "INR",
+    perUsd: Number(process.env.FX_MINOR_PER_USD ?? 8300),
+  };
+  const chat = new ChatService(events, registry, runtime, fx, !credentialled);
 
   if (role === "web" || role === "all") {
     const token = process.env.API_TOKEN ?? null;
@@ -108,7 +118,7 @@ export async function main(): Promise<void> {
                    "Fine on a laptop; set one for anything reachable.");
     }
     const app = buildServer(
-      { registry, store: events, replay, simulate, attribution, insights, copilot },
+      { registry, store: events, replay, simulate, attribution, insights, copilot, chat },
       token,
     );
     const port = Number(process.env.PORT ?? 3000);

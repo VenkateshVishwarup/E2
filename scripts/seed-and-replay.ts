@@ -89,18 +89,30 @@ function stubRuntime(truthByLead: Map<string, Record<string, string>>) {
   } as never;
 }
 
+/**
+ * Seed scripts own the fixture versions they publish, so an edited fixture
+ * replaces them. Versions anyone created in the console are left alone —
+ * immutability still holds for everything this script did not author.
+ */
+async function reseedVersion(registry: JourneyRegistry, yamlText: string): Promise<void> {
+  const spec = parseSpec(yamlText);
+  await registry.deleteVersion(spec.journey, spec.version);
+  await registry.publish(yamlText);
+}
+
 async function main() {
   const pool = createPool(
     process.env.DATABASE_URL ?? "postgres://midfunnel:midfunnel@localhost:5433/midfunnel_dev",
   );
   await migrate(pool);
-  await pool.query("TRUNCATE events");
-  await pool.query("TRUNCATE journey_versions");
+  // Owns the synthetic historical cohort and nothing else. A TRUNCATE here
+  // would delete every real conversation someone had with the agent.
+  await pool.query("DELETE FROM events WHERE lead_id LIKE 'L\\_%'");
 
   const events = new EventStore(pool, TENANT);
   const registry = new JourneyRegistry(pool, TENANT);
-  await registry.publish(V3);
-  await registry.publish(V4);
+  await reseedVersion(registry, V3);
+  await reseedVersion(registry, V4);
 
   const cohort = makeCohort(400);
   const ids = await new ImportBoundary(events, {
@@ -129,7 +141,7 @@ async function main() {
     "  decision_maker:\n    type: enum[self, parent, employer]\n    required: false",
     "  decision_maker:\n    type: enum[self, parent, employer]\n    required: true",
   );
-  await registry.publish(V5);
+  await reseedVersion(registry, V5);
   const changes = await registry.diff(JOURNEY, 4, 5);
 
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;

@@ -60,7 +60,10 @@ const rawSpec = z.object({
     max_turns: z.number().int().positive().default(20),
     quiet_hours: z.object({ start: z.string(), end: z.string(), tz: z.string() }).optional(),
   }),
-  pinned: z.record(z.string()).default({}),
+  // Pinned text plus, under `variables`, default values for the `{{...}}`
+  // placeholders it contains. Branding belongs to the spec author; a lead's
+  // own details are supplied per conversation.
+  pinned: z.record(z.union([z.string(), z.record(z.string())])).default({}),
   scoring: z.object({ weights: z.record(z.number()) }),
   routing: z.record(routeRule),
   tools: z.array(z.object({ capability: z.string().min(1), binding: z.string().min(1) })),
@@ -106,6 +109,41 @@ export function parseSpec(yamlText: string): JourneySpec {
   }
 
   return { ...parsed, agent: { ...parsed.agent, dataScope: parsed.agent.data_scope } };
+}
+
+/** Variables the runtime supplies per conversation rather than the spec. */
+export const RUNTIME_VARIABLES = ["name"] as const;
+
+export function pinnedText(spec: JourneySpec, key: string): string | undefined {
+  const v = spec.pinned[key];
+  return typeof v === "string" ? v : undefined;
+}
+
+export function pinnedDefaults(spec: JourneySpec): Record<string, string> {
+  const v = spec.pinned.variables;
+  return typeof v === "object" && v !== null ? v : {};
+}
+
+/**
+ * Substitutes `{{placeholders}}` in pinned text.
+ *
+ * Unresolved placeholders are reported rather than sent: a lead receiving
+ * "Hi {{name}}" is a worse failure than a slightly generic greeting, and it is
+ * the kind of thing nobody notices in a spec review.
+ */
+export function renderPinned(
+  template: string, values: Record<string, string>,
+): { text: string; unresolved: string[] } {
+  const unresolved: string[] = [];
+  const text = template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key: string) => {
+    const value = values[key];
+    if (value !== undefined && value !== "") return value;
+    unresolved.push(key);
+    return "";
+  });
+  // Collapse the whitespace a removed placeholder leaves behind, and tidy the
+  // punctuation that was leaning on it.
+  return { text: text.replace(/\s{2,}/g, " ").replace(/\s+([,.!?])/g, "$1").trim(), unresolved };
 }
 
 export function requiredEvidenceFields(spec: JourneySpec): string[] {
@@ -157,7 +195,8 @@ export interface SpecWarning {
     | "unknown_scoring_field"
     | "unreachable_weight"
     | "unparseable_metric"
-    | "unreachable_metric";
+    | "unreachable_metric"
+    | "unresolvable_template_variable";
   message: string;
 }
 
@@ -207,6 +246,7 @@ export function lintSpec(spec: JourneySpec): SpecWarning[] {
     });
   }
   warnings.push(...lintMetrics(spec));
+  warnings.push(...lintPinned(spec));
   return warnings;
 }
 
@@ -245,6 +285,34 @@ function lintMetrics(spec: JourneySpec): SpecWarning[] {
     }
   }
   return warnings;
+}
+
+/**
+ * A placeholder with no default and no runtime source reaches a lead as raw
+ * braces. Catch it at authoring time, where it costs nothing to fix.
+ */
+function lintPinned(spec: JourneySpec): SpecWarning[] {
+  const known = new Set([...RUNTIME_VARIABLES, ...Object.keys(pinnedDefaults(spec))]);
+  const missing = new Map<string, string[]>();
+
+  for (const [key, value] of Object.entries(spec.pinned)) {
+    if (typeof value !== "string") continue;
+    for (const m of value.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)) {
+      const name = m[1]!;
+      if (known.has(name)) continue;
+      const where = missing.get(name) ?? [];
+      where.push(key);
+      missing.set(name, where);
+    }
+  }
+
+  return [...missing.entries()].map(([name, keys]) => ({
+    code: "unresolvable_template_variable" as const,
+    message:
+      `pinned.${keys.join(", pinned.")} uses {{${name}}}, which has no default under ` +
+      `pinned.variables and is not supplied by the runtime. A lead would receive the ` +
+      `raw placeholder.`,
+  }));
 }
 
 function eventTypesIn(ast: MetricAst): string[] {

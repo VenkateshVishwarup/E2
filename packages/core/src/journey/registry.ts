@@ -52,6 +52,51 @@ export class JourneyRegistry {
     return parseSpec(rows[0]!.yaml_source);
   }
 
+  /**
+   * Publish, tolerating an identical republish.
+   *
+   * Versions stay immutable — republishing CHANGED yaml under a version that
+   * already exists is still refused. But re-running a seed script, or starting
+   * a server that ensures its default journey exists, is not a violation of
+   * immutability and should not have to be expressed as "delete everything
+   * first". That framing is what made the seed scripts destructive, which in
+   * turn would have deleted every real conversation the moment anyone reseeded.
+   */
+  async ensurePublished(yamlText: string): Promise<{ spec: JourneySpec; created: boolean }> {
+    const spec = parseSpec(yamlText);
+    const { rows } = await this.pool.query<{ yaml_source: string }>(
+      `SELECT yaml_source FROM journey_versions
+       WHERE tenant_id = $1 AND journey = $2 AND version = $3`,
+      [this.tenantId, spec.journey, spec.version],
+    );
+    const existing = rows[0]?.yaml_source;
+    if (existing === undefined) return { spec: await this.publish(yamlText), created: true };
+    if (existing !== yamlText) {
+      throw new Error(
+        `${spec.journey} v${spec.version} is already published with different content; ` +
+        `versions are immutable — publish a new version instead`,
+      );
+    }
+    return { spec, created: false };
+  }
+
+  /**
+   * Removes a published version. **For fixtures and development only.**
+   *
+   * Immutability is what lets lift be attributed to a named change, so nothing
+   * in the product calls this. Seed scripts do, because they own the fixture
+   * versions they publish and a fixture that cannot be edited without wiping
+   * the database is a fixture nobody edits.
+   */
+  async deleteVersion(journey: string, version: number): Promise<boolean> {
+    const { rowCount } = await this.pool.query(
+      `DELETE FROM journey_versions
+       WHERE tenant_id = $1 AND journey = $2 AND version = $3`,
+      [this.tenantId, journey, version],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
   /** The authored YAML, byte for byte. Key order in the source is load-bearing. */
   async getSource(journey: string, version: number): Promise<string> {
     const { rows } = await this.pool.query<{ yaml_source: string }>(

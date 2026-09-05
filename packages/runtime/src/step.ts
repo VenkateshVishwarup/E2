@@ -5,6 +5,7 @@ import { EvidenceExtractor, type ExtractedField } from "./extractor.js";
 import { cacheKey, createClient, MAX_TOKENS, modelFor } from "./provider.js";
 import { CostMeter } from "./meter.js";
 import { evaluatePredicate, evidenceComplete, qualifies, route, score, type Evidence } from "./scoring.js";
+import { pinnedText } from "@midfunnel/core/journey/spec";
 import { LexiconSentiment } from "./sentiment.js";
 
 export type Action =
@@ -46,11 +47,14 @@ export class AgentRuntime {
     const allowFollowUp = opts.allowFollowUp ?? true;
     // 1. First contact — deterministic, pinned, and never a model call.
     if (state.turns.length === 0) {
-      const disclosure = spec.pinned.disclosure ?? "";
+      // Still a template here. The caller renders it, because the values are
+      // per-conversation and the runtime does not know the lead.
+      const disclosure = pinnedText(spec, "disclosure") ?? "";
+      const opening = pinnedText(spec, "opening");
       return [{
         kind: "send",
         text: disclosure || "Hello.",
-        ...(spec.pinned.opening ? { pinnedTemplate: spec.pinned.opening } : {}),
+        ...(opening ? { pinnedTemplate: opening } : {}),
       }];
     }
 

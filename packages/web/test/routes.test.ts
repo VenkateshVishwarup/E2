@@ -59,6 +59,7 @@ beforeEach(async () => {
     attribution: { roll: vi.fn().mockResolvedValue(ROI) } as never,
     insights: { insights: vi.fn().mockResolvedValue({ journey: "j", leadsAnalysed: 30, findings: [], skipped: [] }) } as never,
     copilot: { ask: copilotAsk },
+    chat: { start: vi.fn(), send: vi.fn(), state: vi.fn() },
   });
 });
 afterAll(async () => { await pool.end(); });
@@ -172,6 +173,7 @@ describe("intelligence routes", () => {
       attribution: { roll: vi.fn().mockRejectedValue(new Error("journey not found: nope")) } as never,
       insights: { insights: vi.fn().mockRejectedValue(new Error("connection refused")) } as never,
       copilot: { ask: vi.fn() },
+  chat: { start: vi.fn(), send: vi.fn(), state: vi.fn() },
     });
     expect((await failing.inject({ url: "/api/journeys/nope/roi" })).statusCode).toBe(404);
     expect((await failing.inject({ url: "/api/journeys/j/insights" })).statusCode).toBe(502);

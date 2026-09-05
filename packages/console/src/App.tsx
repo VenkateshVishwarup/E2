@@ -5,12 +5,13 @@ import { SimulateRun } from "./SimulateRun.js";
 import { Scoreboard } from "./Scoreboard.js";
 import { Roi } from "./Roi.js";
 import { CopilotTab } from "./CopilotTab.js";
+import { ChatTab } from "./ChatTab.js";
 
 const JOURNEY = "mba-admissions-qualification";
-const TABS = ["Replay", "Simulate", "A/B", "ROI", "Copilot"] as const;
+const TABS = ["Chat", "Replay", "Simulate", "A/B", "ROI", "Copilot"] as const;
 
 export function App() {
-  const [tab, setTab] = useState<(typeof TABS)[number]>("Replay");
+  const [tab, setTab] = useState<(typeof TABS)[number]>("Chat");
 
   return (
     <main className="wrap">
@@ -25,6 +26,7 @@ export function App() {
         ))}
       </div>
 
+      {tab === "Chat" && <ChatTab journey={JOURNEY} />}
       {tab === "Replay" && <ReplayComparison journey={JOURNEY} a={3} b={4} />}
       {tab === "Simulate" && <SimulateRun journey={JOURNEY} version={4} />}
       {tab === "A/B" && <Scoreboard journey={JOURNEY} a={4} b={5} />}

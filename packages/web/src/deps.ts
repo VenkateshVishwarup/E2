@@ -7,6 +7,7 @@ import type { Scoreboard } from "@midfunnel/batch/experiment/compare";
 import type { AttributionEngine } from "@midfunnel/intelligence/attribution/engine";
 import type { InsightEngine } from "@midfunnel/intelligence/insights/engine";
 import type { Answer } from "@midfunnel/intelligence/copilot/types";
+import type { ChatReply, ChatState, StartSession } from "./chat-service.js";
 
 export interface SimulationResult {
   summary: RunSummary;
@@ -24,6 +25,12 @@ export interface CopilotService {
   ask(journey: string, question: string): Promise<Answer>;
 }
 
+export interface ChatSessions {
+  start(opts: StartSession): Promise<ChatReply>;
+  send(leadId: string, text: string): Promise<ChatReply>;
+  state(leadId: string): Promise<ChatState>;
+}
+
 export interface ServerDeps {
   registry: JourneyRegistry;
   store: EventStore;
@@ -32,6 +39,7 @@ export interface ServerDeps {
   attribution: AttributionEngine;
   insights: InsightEngine;
   copilot: CopilotService;
+  chat: ChatSessions;
 }
 
 /**

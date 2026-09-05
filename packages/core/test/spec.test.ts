@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseSpec, parseTypeExpr, evidenceToJsonSchema, lintSpec, requiredEvidenceFields }
+import { parseSpec, parseTypeExpr, evidenceToJsonSchema, lintSpec, requiredEvidenceFields,
+  renderPinned, pinnedDefaults, pinnedText }
   from "../src/journey/spec.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -127,5 +128,37 @@ describe("lintSpec", () => {
       "  qualifies_when: evidence.complete(required)");
     expect(lintSpec(parseSpec(loose)).map((w) => w.code))
       .not.toContain("unreachable_qualification");
+  });
+});
+
+describe("pinned template variables", () => {
+  it("renders placeholders and reports the ones it could not fill", () => {
+    expect(renderPinned("Hi {{name}}, from {{institute}}.", { name: "Priya", institute: "BIM" }))
+      .toEqual({ text: "Hi Priya, from BIM.", unresolved: [] });
+
+    const partial = renderPinned("Hi {{name}}, from {{institute}}.", { name: "Priya" });
+    expect(partial.unresolved).toEqual(["institute"]);
+    // Never leaves braces, and tidies the punctuation the placeholder held up.
+    expect(partial.text).not.toMatch(/\{\{|\s{2,}|\s\./);
+  });
+
+  it("reads defaults from the spec and knows which variables the runtime supplies", () => {
+    const spec = parseSpec(yaml);
+    expect(pinnedDefaults(spec)).toEqual({ institute: "the admissions team" });
+    expect(pinnedText(spec, "disclosure")).toMatch(/\{\{name\}\}/);
+    expect(pinnedText(spec, "variables")).toBeUndefined();
+  });
+
+  it("lints a placeholder that has no default and no runtime source", () => {
+    const bare = yaml.replace("  variables:\n    institute: the admissions team\n", "");
+    const warning = lintSpec(parseSpec(bare))
+      .find((w) => w.code === "unresolvable_template_variable");
+    expect(warning!.message).toMatch(/\{\{institute\}\}/);
+    expect(warning!.message).toMatch(/raw placeholder/);
+  });
+
+  it("does not flag a variable the runtime supplies", () => {
+    const codes = lintSpec(parseSpec(yaml)).map((w) => w.code);
+    expect(codes).not.toContain("unresolvable_template_variable");
   });
 });

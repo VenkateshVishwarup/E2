@@ -65,6 +65,9 @@ pinned:
   opening: templates/wa_mba_optin_v4
   disclosure: "Hi {{name}}, I'm an AI assistant from {{institute}}."
   handoff: templates/wa_counsellor_intro_v2
+  # Defaults for the placeholders above. `name` comes from the conversation.
+  variables:
+    institute: the admissions team
 
 scoring:
   weights:

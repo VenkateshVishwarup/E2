@@ -42,6 +42,8 @@ tags:
     description: Counterfactual replay of historical leads through a different version.
   - name: Simulation
     description: Synthetic cohorts against a version, before any real lead is touched.
+  - name: Chat
+    description: Live conversations between a person and a published agent.
   - name: Intelligence
     description: ROI attribution, findings, and the copilot.
   - name: Operations
@@ -390,6 +392,108 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/chat/sessions:
+    post:
+      operationId: startChatSession
+      tags: [Chat]
+      summary: Begin a conversation with a published agent
+      description: |
+        A session is a lead. Everything it writes is `live`-scoped with no `runId`, so the
+        conversation lands in the same log the ROI and insight screens already read — a
+        real conversation is not a special case here, it is the ordinary case.
+
+        The first agent turn is **pinned and deterministic**, never a model call, so the
+        AI disclosure a person sees first cannot be improvised.
+
+        Pass `version` to talk to a specific one. Pass `split` instead — `{"4": 50, "5":
+        50}` — and the traffic allocator assigns deterministically, which is how a new
+        agent takes real traffic without disturbing the one already running. Pass neither
+        and the latest published version answers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartChatRequest"
+      responses:
+        "200":
+          description: The opening turn and the conversation's state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatReply"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/chat/sessions/{leadId}/messages:
+    post:
+      operationId: sendChatMessage
+      tags: [Chat]
+      summary: Say something, and get the agent's reply
+      description: |
+        One runtime step, persisted. Evidence extracted this turn, any score and route it
+        produced, and the tokens it cost are all written before this returns — cost per
+        turn rather than per conversation, because a conversation someone abandons still
+        cost real money and still belongs in cost per outcome.
+
+        `reply` is null when the agent has nothing left to say: the conversation completed,
+        or a policy rule escalated it to a human.
+      parameters:
+        - $ref: "#/components/parameters/LeadId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatMessageRequest"
+      responses:
+        "200":
+          description: The agent's reply and the updated state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatReply"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/chat/sessions/{leadId}:
+    get:
+      operationId: getChatSession
+      tags: [Chat]
+      summary: The full state of a conversation
+      description: |
+        Folded from the event log rather than held in memory, so a session survives a
+        restart and two clients watching the same conversation cannot disagree.
+      parameters:
+        - $ref: "#/components/parameters/LeadId"
+      responses:
+        "200":
+          description: The conversation and everything derived from it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatState"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/copilot/ask:
     post:
       operationId: askCopilot
@@ -486,6 +590,18 @@ components:
         type: integer
         minimum: 1
         example: 4
+
+    LeadId:
+      name: leadId
+      in: path
+      required: true
+      description: |
+        The session's lead id, returned when the session started. Chat leads carry a
+        `web_` prefix so a seed script's cleanup can never delete a real conversation.
+      schema:
+        type: string
+        pattern: "^web_[0-9a-f]{16}$"
+        example: web_3f9a21c07b4e6d15
 
     ReportingCurrency:
       name: currency
@@ -658,6 +774,230 @@ components:
             kind: changed
             before: false
             after: true
+
+    StartChatRequest:
+      type: object
+      required: [journey]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: mba-admissions-qualification
+        version:
+          type: integer
+          minimum: 1
+          description: A specific version. Omit for the latest, or supply `split`.
+          example: 5
+        split:
+          type: object
+          description: |
+            Live A/B. Version number to percentage, summing to 100. Assignment is
+            deterministic, so re-running an experiment does not reshuffle anyone.
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 100
+          minProperties: 2
+          example: { "4": 50, "5": 50 }
+        source:
+          type: string
+          maxLength: 60
+          default: web_chat
+          example: web_chat
+        campaignId:
+          type: string
+          maxLength: 120
+          default: direct
+          example: meta_scholarships
+        creativeId:
+          type: string
+          maxLength: 120
+          default: console
+          example: cr_fees
+      example:
+        journey: mba-admissions-qualification
+        split: { "4": 50, "5": 50 }
+
+    ChatMessageRequest:
+      type: object
+      required: [text]
+      additionalProperties: false
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          example: I am looking at the executive MBA for this intake.
+      example:
+        text: I am looking at the executive MBA for this intake.
+
+    ChatTurn:
+      type: object
+      required: [role, text, at]
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+          enum: [agent, lead]
+          example: agent
+        text:
+          type: string
+          example: Hi, I am an AI assistant from the admissions team.
+        at:
+          type: string
+          format: date-time
+          example: "2026-09-05T09:14:02.117Z"
+
+    EvidenceView:
+      type: object
+      description: |
+        One field of the journey's declared evidence contract, and whether this
+        conversation has established it yet. Watching these fill in is the difference
+        between a declared contract and a prompt.
+      required: [field, required, value, confidence, sensitive]
+      additionalProperties: false
+      properties:
+        field:
+          type: string
+          example: budget_band
+        required:
+          type: boolean
+          example: true
+        value:
+          nullable: true
+          description: Null until established.
+          example: needs_financing
+        confidence:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          maximum: 1
+          example: 0.88
+        sensitive:
+          type: boolean
+          description: Declared `sensitive`, so the agent will not open with it.
+          example: true
+
+    ChatState:
+      type: object
+      required:
+        [leadId, journey, version, turns, evidence, missingRequired, score, decision, metrics, completed, escalated, escalationRule, modelCost, currency, offline]
+      additionalProperties: false
+      properties:
+        leadId:
+          type: string
+          example: web_3f9a21c07b4e6d15
+        journey:
+          type: string
+          example: mba-admissions-qualification
+        version:
+          type: integer
+          minimum: 1
+          example: 5
+        turns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatTurn"
+        evidence:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvidenceView"
+        missingRequired:
+          type: array
+          description: Required fields still to be established. Empty means ready to score.
+          items:
+            type: string
+            example: budget_band
+          example: [budget_band]
+        score:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 100
+          description: Null until required evidence is complete.
+          example: 80
+        decision:
+          type: string
+          nullable: true
+          description: The routing decision, named by the journey's own routing block.
+          example: hot
+        metrics:
+          type: object
+          description: |
+            The journey's OWN declared metrics, evaluated live over this conversation.
+            There is no platform-wide notion of "qualified" to report instead.
+          additionalProperties:
+            oneOf:
+              - type: boolean
+              - type: number
+          example: { qualified_lead: true, booked: true, conversion: false, revenue: 0 }
+        completed:
+          type: boolean
+          example: true
+        escalated:
+          type: boolean
+          example: false
+        escalationRule:
+          type: string
+          nullable: true
+          description: The declared rule that fired, when one did.
+          example: evidence.budget_band == needs_financing
+        modelCost:
+          type: integer
+          minimum: 0
+          description: |
+            Metered from real token usage, in minor units of `currency`. Zero when running
+            without a model credential, which is a fact rather than an estimate.
+          example: 214
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+          example: INR
+        offline:
+          type: boolean
+          description: |
+            True when no model credential is configured; a deterministic keyword extractor
+            is answering and the conversation quality is not representative.
+          example: true
+      example:
+        leadId: web_3f9a21c07b4e6d15
+        journey: mba-admissions-qualification
+        version: 5
+        turns:
+          - { role: agent, text: "Hi, I'm an AI assistant from the admissions team.", at: "2026-09-05T09:14:02.117Z" }
+          - { role: lead, text: "Executive MBA, this intake", at: "2026-09-05T09:14:31.004Z" }
+        evidence:
+          - { field: target_program, required: true, value: executive_mba, confidence: 0.95, sensitive: false }
+          - { field: timeline, required: true, value: this_intake, confidence: 0.9, sensitive: false }
+          - { field: budget_band, required: true, value: null, confidence: null, sensitive: true }
+        missingRequired: [budget_band]
+        score: null
+        decision: null
+        metrics: { qualified_lead: false, booked: false, conversion: false, revenue: 0 }
+        completed: false
+        escalated: false
+        escalationRule: null
+        modelCost: 214
+        currency: INR
+        offline: false
+
+    ChatReply:
+      type: object
+      required: [reply, state]
+      additionalProperties: false
+      properties:
+        reply:
+          type: string
+          nullable: true
+          description: |
+            Null when the agent has nothing further to say — the conversation completed, or
+            a policy rule escalated it to a human.
+          example: Which programme are you considering?
+        state:
+          $ref: "#/components/schemas/ChatState"
 
     LintReport:
       type: object

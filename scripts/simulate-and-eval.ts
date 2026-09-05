@@ -70,16 +70,27 @@ async function runVersion(
   return { spec, summary, cards, quality: aggregate(cards) };
 }
 
+/**
+ * Seed scripts own the fixture versions they publish, so an edited fixture
+ * replaces them. Versions anyone created in the console are left alone —
+ * immutability still holds for everything this script did not author.
+ */
+async function reseedVersion(registry: JourneyRegistry, yamlText: string): Promise<void> {
+  const spec = parseSpec(yamlText);
+  await registry.deleteVersion(spec.journey, spec.version);
+  await registry.publish(yamlText);
+}
+
 async function main() {
   const pool = createPool(
     process.env.DATABASE_URL ?? "postgres://midfunnel:midfunnel@localhost:5433/midfunnel_dev",
   );
   await migrate(pool);
-  await pool.query("TRUNCATE events");
-  await pool.query("TRUNCATE journey_versions");
+  // Owns simulated runs. Live traffic is a different env and stays put.
+  await pool.query("DELETE FROM events WHERE env = 'sim'");
 
   const registry = new JourneyRegistry(pool, TENANT);
-  for (const y of [V4, V5, V6]) await registry.publish(y);
+  for (const y of [V4, V5, V6]) await reseedVersion(registry, y);
 
   const pct = (v: number | null) => (v === null ? "—" : `${(v * 100).toFixed(1)}%`);
   const lintV4 = lintSpec(parseSpec(V4));
