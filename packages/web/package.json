@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "type": "module",
   "main": "./src/server.ts",
+  "exports": {
+    ".": "./src/server.ts",
+    "./*": "./src/*.ts"
+  },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",

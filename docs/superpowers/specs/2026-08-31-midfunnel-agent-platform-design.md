@@ -976,6 +976,18 @@ What the build forced:
   sent a pinned message to a person
 - **Hardcoded version numbers in the console went stale the moment authoring shipped**
 
+**First measured live conversation (2026-09-05, `terra`).** Four turns to full
+qualification: 2,172 input tokens, 334 output, of which only **54 were reasoning**, at
+**$0.0084 (₹0.69) per conversation**. Two corrections to earlier estimates follow from it:
+
+- **Cost is roughly a quarter of what was projected.** A 500-conversation simulation is
+  about $4, not the ~$19 estimated from assumed reasoning volume. Reasoning tokens on
+  schema-constrained extraction are far lower than assumed
+- **Prompt caching did not engage at all** — `cached_tokens` was 0 across three calls
+  sharing a cache key, because each request's prefix (~724 tokens) is below the platform's
+  minimum. This confirms, with measurement, that caching is not a lever at this prompt
+  size; it also means the prefix-ordering work buys nothing until prompts grow
+
 ---
 
 ## 16. Workstreams for a Team
