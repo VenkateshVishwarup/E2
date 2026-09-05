@@ -20,9 +20,10 @@ export function createPool(
   connectionString = process.env.DATABASE_URL, opts: PoolOptions = {},
 ): Pool {
   if (!connectionString) throw new Error("DATABASE_URL is not set");
-  // Managed Postgres requires TLS; local Docker does not offer it.
-  const ssl = /\bsslmode=require\b/.test(connectionString) || /neon\.tech|supabase/.test(connectionString)
-    ? { rejectUnauthorized: false }
-    : undefined;
-  return new pg.Pool({ connectionString, ...(ssl ? { ssl } : {}), ...opts });
+  // TLS is left to the connection string's own `sslmode`, which managed hosts
+  // already set. An earlier version forced `rejectUnauthorized: false` for
+  // known hosts — which disabled certificate verification on exactly the
+  // connections that cross a network, to solve a problem those hosts do not
+  // have. Their certificates are valid.
+  return new pg.Pool({ connectionString, ...opts });
 }

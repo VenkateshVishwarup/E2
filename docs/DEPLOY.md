@@ -30,25 +30,29 @@ and every screen says so.
 
 ---
 
-## 1. Database
+## 1. Database — done
 
-Create a Neon project and take the **pooled** connection string — the host ends in
-`-pooler`. The unpooled one will exhaust its connection limit as soon as more than a couple
-of function instances are warm.
+The Neon project `noisy-shadow-61254066` is linked, and `neon link` wrote the **pooled**
+connection string into `.env` (the host ends `-pooler`; the unpooled one exhausts its
+connection limit as soon as a couple of function instances are warm).
+
+It has been migrated and seeded:
 
 ```
-postgres://user:pass@ep-xxx-pooler.region.aws.neon.tech/neondb?sslmode=require
+19,932 events · 2,000 leads · versions 3,4,5 · live v5
 ```
 
-Migrate it, and seed it if you want the demo cohort:
+To redo either:
 
 ```bash
-DATABASE_URL="postgres://…-pooler…?sslmode=require" npm run db:migrate:remote
-DATABASE_URL="postgres://…-pooler…?sslmode=require" npm run roi
+npm run db:migrate:remote
+npm run roi
 ```
 
-`npm run roi` writes ~20,000 events and publishes v3, v4 and v5. It is well inside Neon's
-free tier.
+Both read `DATABASE_URL` from `.env`, which now points at Neon — so **local runs and the
+deployment share one database**. That is deliberate: what you see locally is what is
+deployed. Tests are unaffected; they use `TEST_DATABASE_URL`, still the local Docker
+Postgres.
 
 ## 2. Environment variables
 
@@ -59,10 +63,30 @@ Set these in Vercel, for Production:
 | `DATABASE_URL` | the **pooled** Neon string | required |
 | `API_TOKEN` | a long random string | the gate, on Hobby |
 | `MAX_COHORT` | `60` | Hobby kills a function at 60s; a 200-persona run does not fit |
-| `OPENAI_API_KEY` | your key, **or leave unset** | unset ⇒ the deployment cannot spend |
+| `OPENAI_API_KEY` | **leave unset** | see below |
 | `MODEL_PROFILE` | `dev` | `terra` everywhere. `demo` only when presenting |
 | `TENANT_ID` | `t1` | matches the seeded data |
 | `REPORTING_CURRENCY` | `INR` | |
+
+**`OPENAI_API_KEY` is deliberately not set on Vercel.** Production is open on Hobby, and a
+public URL holding a live key is spendable by anyone who finds it. Without it the
+deployment runs on the deterministic extractor and the offline copilot: every number stays
+real — they are folds over the event log, not model output — and it cannot cost anything.
+What is lost is conversation quality, and every screen that uses the fallback says so.
+
+**To turn the model on for a demo**, when you are watching it:
+
+```bash
+vercel env add OPENAI_API_KEY production   # paste the key
+vercel --prod                              # redeploy so the function picks it up
+```
+
+and afterwards:
+
+```bash
+vercel env rm OPENAI_API_KEY production
+vercel --prod
+```
 
 `MAX_COHORT` is the one people forget. Without it, Simulate offers 200 personas, the
 function is killed at 60 seconds, and the run dies half-written — events already in the
