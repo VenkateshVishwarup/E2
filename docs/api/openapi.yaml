@@ -169,6 +169,111 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/journeys/{journey}/source:
+    get:
+      operationId: getJourneySource
+      tags: [Journeys]
+      summary: The authored YAML for a version
+      description: |
+        Byte for byte as it was published. Key order in the source is load-bearing —
+        routing is first-match-wins, and a spec round-tripped through JSON comes back with
+        its rules reordered — so the editor loads this rather than a re-serialised spec.
+      parameters:
+        - $ref: "#/components/parameters/JourneyName"
+        - $ref: "#/components/parameters/JourneyVersion"
+      responses:
+        "200":
+          description: The version and its source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JourneySource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/journeys/lint:
+    post:
+      operationId: lintDraftJourney
+      tags: [Journeys]
+      summary: Check YAML that has not been published yet
+      description: |
+        The editor's companion: it checks a draft while someone is still typing, so a
+        problem surfaces before publishing rather than after.
+
+        **YAML that does not parse returns 200 with `valid: false`**, not an error status.
+        A malformed draft is an expected state of an editor, and the caller needs the
+        message to display, not a failed request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DraftSpec"
+      responses:
+        "200":
+          description: Whether it parses, and every warning against it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftLintResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/journeys/publish:
+    post:
+      operationId: publishJourneyVersion
+      tags: [Journeys]
+      summary: Publish a new journey version
+      description: |
+        **Publishing is deployment.** There is no separate deploy step: from the moment
+        this returns, a new chat session can be served by this version, and a traffic
+        split can send it real leads.
+
+        Versions are immutable. Republishing a version number that exists returns 409 —
+        bump the version instead. That immutability is what makes lift attributable to a
+        named change rather than to "the prompt at some point last month".
+
+        Lint warnings are returned with the published version rather than blocking it: a
+        spec may legitimately rely on optional evidence a lead volunteers, and the platform
+        should not be the judge of that.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DraftSpec"
+      responses:
+        "200":
+          description: Published, and live for new conversations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LintReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: That version number is already published, and versions are immutable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: mba-admissions-qualification v5 is already published; versions are immutable
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/journeys/{journey}/lint:
     get:
       operationId: lintJourneyVersion
@@ -998,6 +1103,73 @@ components:
           example: Which programme are you considering?
         state:
           $ref: "#/components/schemas/ChatState"
+
+    JourneySource:
+      type: object
+      required: [journey, version, yaml]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          example: mba-admissions-qualification
+        version:
+          type: integer
+          minimum: 1
+          example: 4
+        yaml:
+          type: string
+          example: "journey: mba-admissions-qualification\nversion: 4\n..."
+      example:
+        journey: mba-admissions-qualification
+        version: 4
+        yaml: "journey: mba-admissions-qualification\nversion: 4\n..."
+
+    DraftSpec:
+      type: object
+      required: [yaml]
+      additionalProperties: false
+      properties:
+        yaml:
+          type: string
+          description: The complete journey specification.
+          minLength: 1
+          maxLength: 40000
+          example: "journey: mba-admissions-qualification\nversion: 6\n..."
+      example:
+        yaml: "journey: mba-admissions-qualification\nversion: 6\n..."
+
+    DraftLintResult:
+      type: object
+      required: [valid, warnings]
+      additionalProperties: false
+      properties:
+        valid:
+          type: boolean
+          description: Whether the draft parses at all.
+          example: true
+        journey:
+          type: string
+          description: Present only when the draft parses.
+          example: mba-admissions-qualification
+        version:
+          type: integer
+          minimum: 1
+          description: Present only when the draft parses.
+          example: 6
+        error:
+          type: string
+          description: Present only when the draft does not parse.
+          maxLength: 500
+          example: routing needs exactly one "otherwise" rule, found 2
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpecWarning"
+      example:
+        valid: true
+        journey: mba-admissions-qualification
+        version: 6
+        warnings: []
 
     LintReport:
       type: object

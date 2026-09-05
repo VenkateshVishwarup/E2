@@ -33,6 +33,10 @@ const money = (v: number | null | undefined, currency: string) =>
     : new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 0 })
         .format(v / 100);
 
+/** An undefined ratio, not an infinite one, when nothing was earned. */
+const perOutcome = (cost: number, count: number, currency: string) =>
+  count === 0 ? "—" : money(Math.round(cost / count), currency);
+
 function flatten(nodes: Node[], depth = 0): Array<{ node: Node; depth: number }> {
   return nodes.flatMap((node) => [{ node, depth }, ...flatten(node.children, depth + 1)]);
 }
@@ -64,10 +68,13 @@ export function Roi({ journey }: { journey: string }) {
         separate attribution pipeline to drift out of sync.
       </p>
 
+      {/* Tokens spent against outcomes earned — the question this screen exists
+          to answer. Media spend is a separate, allocated number below. */}
+      <h2>Model spend against outcomes</h2>
       <div className="metrics">
         <div className="metric">
-          <div className="metric-label">leads</div>
-          <div className="metric-value">{total.leads}</div>
+          <div className="metric-label">tokens spent</div>
+          <div className="metric-value">{money(total.modelCost, currency)}</div>
         </div>
         {report.metricKinds.booleans.map((m) => (
           <div className="metric" key={m}>
@@ -75,6 +82,36 @@ export function Roi({ journey }: { journey: string }) {
             <div className="metric-value">{total.counts[m] ?? 0}</div>
           </div>
         ))}
+      </div>
+      <div className="metrics" style={{ marginTop: 12 }}>
+        {report.metricKinds.booleans.map((m) => (
+          <div className="metric" key={m}>
+            <div className="metric-label">model cost / {m.replace(/_/g, " ")}</div>
+            <div className="metric-value">
+              {perOutcome(total.modelCost, total.counts[m] ?? 0, currency)}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {total.modelCost === 0 && (
+        <p className="muted">
+          Model spend is ₹0 because none of these {total.leads} leads involved a model call —
+          they were imported or seeded. Hold a conversation on the Chat tab with a credential
+          configured and this becomes a measured number, not an estimate.
+        </p>
+      )}
+
+      <h2>With media spend included</h2>
+      <div className="metrics">
+        <div className="metric">
+          <div className="metric-label">leads</div>
+          <div className="metric-value">{total.leads}</div>
+        </div>
+        <div className="metric">
+          <div className="metric-label">total spend</div>
+          <div className="metric-value">{money(total.totalCost, currency)}</div>
+        </div>
         <div className="metric">
           <div className="metric-label">cost / conversion</div>
           <div className="metric-value">{money(total.costPer.conversion, currency)}</div>
@@ -86,8 +123,9 @@ export function Roi({ journey }: { journey: string }) {
       <div className="band observed">
         <h3>Observed — metered</h3>
         <p>
-          Model spend {money(total.modelCost, currency)} · revenue{" "}
-          {money(total.sums.revenue ?? 0, currency)} from {total.counts.conversion ?? 0} conversions
+          Model spend {money(total.modelCost, currency)}, counted from real token usage ·
+          revenue {money(total.sums.revenue ?? 0, currency)} from{" "}
+          {total.counts.conversion ?? 0} conversions
         </p>
       </div>
       <div className="band modelled">
@@ -105,7 +143,8 @@ export function Roi({ journey }: { journey: string }) {
               <th>campaign → creative → version</th>
               <th>leads</th>
               {report.metricKinds.booleans.map((m) => <th key={m}>{m.replace(/_/g, " ")}</th>)}
-              <th>spend</th>
+              <th>model</th>
+              <th>media</th>
               <th>cost / conversion</th>
               <th>revenue</th>
             </tr>
@@ -119,7 +158,8 @@ export function Roi({ journey }: { journey: string }) {
                 </td>
                 <td>{node.leads}</td>
                 {report.metricKinds.booleans.map((m) => <td key={m}>{node.counts[m] ?? 0}</td>)}
-                <td>{money(node.totalCost, currency)}</td>
+                <td>{money(node.modelCost, currency)}</td>
+                <td>{money(node.mediaCost, currency)}</td>
                 <td>{money(node.costPer.conversion, currency)}</td>
                 <td>{money(node.sums.revenue ?? 0, currency)}</td>
               </tr>

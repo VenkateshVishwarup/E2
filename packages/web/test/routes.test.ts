@@ -179,3 +179,54 @@ describe("intelligence routes", () => {
     expect((await failing.inject({ url: "/api/journeys/j/insights" })).statusCode).toBe(502);
   });
 });
+
+describe("authoring", () => {
+  const journey = "mba-admissions-qualification";
+
+  it("returns the authored YAML byte for byte, since key order is load-bearing", async () => {
+    const res = await app.inject({ url: `/api/journeys/${journey}/source?version=4` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().yaml).toBe(V4);
+  });
+
+  it("treats a malformed draft as a lint result, not a failed request", async () => {
+    // An editor's caller needs the message to display, not a 500.
+    const res = await app.inject({
+      method: "POST", url: "/api/journeys/lint", payload: { yaml: "journey: x\nversion: nope" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().valid).toBe(false);
+    expect(res.json().error).toBeTruthy();
+  });
+
+  it("lints a valid draft that has not been published", async () => {
+    const draft = V4.replace("version: 4", "version: 9");
+    const res = await app.inject({ method: "POST", url: "/api/journeys/lint", payload: { yaml: draft } });
+    expect(res.json()).toMatchObject({ valid: true, version: 9 });
+    expect(res.json().warnings.map((w: { code: string }) => w.code))
+      .toContain("unreachable_qualification");
+  });
+
+  it("publishes a new version and reports its warnings without blocking it", async () => {
+    const draft = V4.replace("version: 4", "version: 8");
+    const res = await app.inject({ method: "POST", url: "/api/journeys/publish", payload: { yaml: draft } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().version).toBe(8);
+    // Published, and immediately servable.
+    const versions = await app.inject({ url: `/api/journeys/${journey}/versions` });
+    expect(versions.json().versions).toContain(8);
+  });
+
+  it("refuses to republish a version, with 409 rather than a server error", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/journeys/publish", payload: { yaml: V4 } });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatch(/already published/);
+  });
+
+  it("rejects a draft that is empty or absurdly large before parsing it", async () => {
+    for (const yaml of ["   ", "x".repeat(40_001)]) {
+      const res = await app.inject({ method: "POST", url: "/api/journeys/publish", payload: { yaml } });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+});

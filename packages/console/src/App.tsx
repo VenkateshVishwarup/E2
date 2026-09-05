@@ -6,12 +6,15 @@ import { Scoreboard } from "./Scoreboard.js";
 import { Roi } from "./Roi.js";
 import { CopilotTab } from "./CopilotTab.js";
 import { ChatTab } from "./ChatTab.js";
+import { JourneyEditor } from "./JourneyEditor.js";
 
 const JOURNEY = "mba-admissions-qualification";
-const TABS = ["Chat", "Replay", "Simulate", "A/B", "ROI", "Copilot"] as const;
+const TABS = ["Journey", "Chat", "Replay", "Simulate", "A/B", "ROI", "Copilot"] as const;
 
 export function App() {
-  const [tab, setTab] = useState<(typeof TABS)[number]>("Chat");
+  const [tab, setTab] = useState<(typeof TABS)[number]>("Journey");
+  // Publishing changes what every other tab is looking at, so they remount.
+  const [published, setPublished] = useState(0);
 
   return (
     <main className="wrap">
@@ -26,7 +29,10 @@ export function App() {
         ))}
       </div>
 
-      {tab === "Chat" && <ChatTab journey={JOURNEY} />}
+      {tab === "Journey" && (
+        <JourneyEditor journey={JOURNEY} onPublished={() => setPublished((n) => n + 1)} />
+      )}
+      {tab === "Chat" && <ChatTab key={published} journey={JOURNEY} />}
       {tab === "Replay" && <ReplayComparison journey={JOURNEY} a={3} b={4} />}
       {tab === "Simulate" && <SimulateRun journey={JOURNEY} version={4} />}
       {tab === "A/B" && <Scoreboard journey={JOURNEY} a={4} b={5} />}

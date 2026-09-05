@@ -33,9 +33,10 @@ npm run simulate       # M2 — 500 personas, scorecards, alerts, an A/B scorebo
 npm run roi            # M3 — attribute ROI, derive findings, ask the copilot
 ```
 
-**Each one resets the database**, so they are alternatives rather than a sequence: the
-console shows whichever you ran last. `npm run roi` is the one to run before a demo — it
-publishes v3, v4 and v5 and leaves every tab with something to show.
+Each removes only the data it owns and leaves everything else alone, so **a conversation
+you have in the console survives a reseed**. They are alternatives rather than a sequence:
+`npm run roi` is the one to run before a demo, because it publishes v3, v4 and v5 and
+leaves every tab with something to show.
 
 Then bring up the console:
 
@@ -63,13 +64,28 @@ and refused, but an unrecognised one would just produce a confident 401.
 
 ---
 
+## Try it in two minutes
+
+1. **Journey tab** — the spec loads. Change something, press *Bump version*, press
+   *Publish*. Checks run as you type; warnings never block you.
+2. **Chat tab** — the version you just published is already serving. Talk to it. Watch the
+   evidence contract on the right fill in as you answer, then score and route.
+3. **ROI tab** — your conversation is in there, counted, with its token cost.
+
+That loop is the product: author a contract, deploy it by publishing it, talk to it, and
+see what it cost against what it earned.
+
+---
+
 ## The demo, in eight moments
 
 | # | Moment | Where | Kills the objection |
 |---|---|---|---|
+| 0 | **Author and deploy** — edit the YAML, publish, and the next conversation is served by it. Publishing *is* deployment | Journey tab | Every deployment starts from scratch |
 | 1 | **The money shot** — replay a real cohort through two versions, lift with a confidence interval, drill into the divergent conversations | Replay tab | *"Will customers pay more?"* |
 | 2 | **Declare, don't prompt** — change `decision_maker` from optional to required. That is the entire edit | `journeys/*.yaml`, diff endpoint | Every deployment starts from scratch |
 | 3 | **Sandbox in 60 seconds** — 500 personas against a new version before one real lead sees it | Simulate tab | No way to set up a sandbox |
+| 3b | **Live A/B** — start a chat with a split and the allocator assigns deterministically; a new version takes real traffic without touching the old one | Chat tab | Cannot A/B a live bot |
 | 4 | **Break it on purpose** — ship a bad version; the eval harness catches the policy breach and the alert fires | Simulate tab | No quality tracking |
 | 5 | **A/B scoreboard** — two versions over one paired cohort | A/B tab | No A/B on a live bot |
 | 6 | **ROI, closed loop** — cost per qualified lead and per enrolment, attributed campaign → creative → journey version | ROI tab | Cannot show ROI |
@@ -112,6 +128,12 @@ this over a prompt-and-dashboard approach.
   `runId`, enforced in the query builder rather than by remembering to pass a flag.
 - **The agent is a principal.** Every event carries an `agent_id`, and tool privileges are
   enforced at the broker, not merely declared. An unprivileged call is denied and logged.
+- **A live conversation writes exactly the events a simulated one writes.** One shared
+  translation, used by both, differing only in `env` and `runId`. Two copies would have
+  meant live traffic and sim traffic quietly measuring different things.
+- **Nothing a person sees is improvised.** The opening disclosure is pinned and rendered
+  from declared variables, never generated, and a placeholder with no value is caught by
+  the linter rather than reaching a lead as raw braces.
 
 ---
 
@@ -173,7 +195,7 @@ One deployable artifact, five packages, started by role (`ROLE=web|runtime|batch
 | `runtime` | `step()`, evidence extraction, scoring, routing, tool broker, model profiles, cost metering |
 | `batch` | Import, replay, simulation, eval harness, traffic allocator |
 | `intelligence` | Attribution, insight engine, copilot |
-| `web` + `console` | Fastify API and the React console |
+| `web` + `console` | Fastify API, the live chat loop, and the React console |
 
 Full design, decision log and roadmap:
 [`docs/superpowers/specs/2026-08-31-midfunnel-agent-platform-design.md`](docs/superpowers/specs/2026-08-31-midfunnel-agent-platform-design.md).
@@ -199,7 +221,7 @@ Reasoning effort, not prompt caching, is the cost lever: on a real call output r
 ## Tests
 
 ```bash
-npm test          # 326 tests
+npm test          # 355 tests
 npm run typecheck
 ```
 
