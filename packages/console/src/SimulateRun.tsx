@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface Alert { id: string; severity: "warn" | "critical"; message: string }
 interface Quality {
@@ -15,10 +15,26 @@ interface Result {
 
 const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 
+interface SpecWarning { code: string; message: string }
+
 export function SimulateRun({ journey, version }: { journey: string; version: number }) {
   const [result, setResult] = useState<Result | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<SpecWarning[]>([]);
+
+  // Static checks, before anything is run. A version that cannot qualify anyone
+  // reports 0% qualified, and a 0% with no explanation reads as broken software
+  // rather than as the broken spec it is.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await fetch(
+          `/api/journeys/${encodeURIComponent(journey)}/lint?version=${version}`);
+        if (r.ok) setWarnings((await r.json()).warnings ?? []);
+      } catch { /* the lint is advisory; never block the run on it */ }
+    })();
+  }, [journey, version]);
 
   const go = async (n: number) => {
     setBusy(true); setError(null);
@@ -38,6 +54,15 @@ export function SimulateRun({ journey, version }: { journey: string; version: nu
       <p className="muted">
         Drive synthetic leads through v{version} before a real one ever touches it.
       </p>
+      {warnings.length > 0 && (
+        <div className="band modelled">
+          <h3>Static check — before anything runs</h3>
+          {warnings.map((w) => (
+            <div className="alert warn" key={w.code}>{w.message}</div>
+          ))}
+        </div>
+      )}
+
       <button className="btn" disabled={busy} onClick={() => void go(200)}>
         {busy ? "Simulating…" : "Simulate 200 leads"}
       </button>

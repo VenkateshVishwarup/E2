@@ -167,6 +167,41 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/journeys/{journey}/lint:
+    get:
+      operationId: lintJourneyVersion
+      tags: [Journeys]
+      summary: Static checks against a journey version
+      description: |
+        Catches journeys that cannot do what they claim, before a single lead meets them.
+
+        The check that motivated this endpoint: a journey whose *required* evidence can
+        never reach its own qualifying threshold will qualify nobody, and the symptom —
+        a simulation run reporting 0% qualified — looks like broken software rather than
+        a broken spec. It also flags scoring weights on fields that do not exist, metrics
+        that do not parse, and a booking metric in a journey whose routing never hands off.
+
+        These are warnings, not errors: a spec may legitimately rely on optional evidence
+        a lead volunteers. Omit `version` for the latest.
+      parameters:
+        - $ref: "#/components/parameters/JourneyName"
+        - $ref: "#/components/parameters/JourneyVersion"
+      responses:
+        "200":
+          description: The version checked, and every warning against it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LintReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/replay:
     post:
       operationId: replayCohort
@@ -442,6 +477,16 @@ components:
         minimum: 1
         example: 4
 
+    JourneyVersion:
+      name: version
+      in: query
+      required: false
+      description: Which version to check. Omit for the latest published version.
+      schema:
+        type: integer
+        minimum: 1
+        example: 4
+
     ReportingCurrency:
       name: currency
       in: query
@@ -613,6 +658,30 @@ components:
             kind: changed
             before: false
             after: true
+
+    LintReport:
+      type: object
+      required: [journey, version, warnings]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          example: mba-admissions-qualification
+        version:
+          type: integer
+          minimum: 1
+          example: 4
+        warnings:
+          type: array
+          description: Empty when the version passes every check.
+          items:
+            $ref: "#/components/schemas/SpecWarning"
+      example:
+        journey: mba-admissions-qualification
+        version: 4
+        warnings:
+          - code: unreachable_qualification
+            message: required evidence can score at most 65, but qualifying needs 70. This journey cannot qualify anyone.
 
     ReplayRequest:
       type: object

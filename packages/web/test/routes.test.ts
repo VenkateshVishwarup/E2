@@ -144,9 +144,29 @@ describe("intelligence routes", () => {
     expect(copilotAsk).not.toHaveBeenCalled();
   });
 
+  it("reports the static checks against a version before anything is run", async () => {
+    const res = await app.inject({ url: `/api/journeys/${journey}/lint?version=4` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().version).toBe(4);
+    // v4 is the version whose required evidence tops out below its own threshold.
+    expect(res.json().warnings.map((w: { code: string }) => w.code))
+      .toContain("unreachable_qualification");
+  });
+
+  it("lints the latest version when none is named", async () => {
+    const res = await app.inject({ url: `/api/journeys/${journey}/lint` });
+    expect(res.json().version).toBe(4);
+  });
+
+  it("rejects a version that is not a positive integer", async () => {
+    const res = await app.inject({ url: `/api/journeys/${journey}/lint?version=four` });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/positive integer/);
+  });
+
   it("distinguishes a missing journey from an upstream failure", async () => {
     const failing = buildServer({
-      registry: { list: vi.fn(), get: vi.fn(), diff: vi.fn() } as never,
+      registry: { list: vi.fn(), get: vi.fn(), diff: vi.fn(), latest: vi.fn() } as never,
       store: new EventStore(pool, "t1"),
       replay: {} as never, simulate: {} as never,
       attribution: { roll: vi.fn().mockRejectedValue(new Error("journey not found: nope")) } as never,

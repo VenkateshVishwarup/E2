@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { lintSpec } from "@midfunnel/core/journey/spec";
 import { statusFor, type ServerDeps } from "../deps.js";
 
 /** A question long enough to be an essay is a paste, not a question. */
@@ -28,6 +29,24 @@ export function registerIntelligenceRoutes(app: FastifyInstance, deps: ServerDep
           ...(req.query.conversion ? { conversion: req.query.conversion } : {}),
           ...(req.query.qualified ? { qualified: req.query.qualified } : {}),
         });
+      } catch (err) {
+        return reply.code(statusFor(err)).send({ error: (err as Error).message });
+      }
+    },
+  );
+
+  app.get<{ Params: { journey: string }; Querystring: { version?: string } }>(
+    "/api/journeys/:journey/lint",
+    async (req, reply) => {
+      const raw = req.query.version;
+      if (raw !== undefined && !/^\d+$/.test(raw)) {
+        return reply.code(400).send({ error: "version must be a positive integer" });
+      }
+      try {
+        const spec = raw === undefined
+          ? await deps.registry.latest(req.params.journey)
+          : await deps.registry.get(req.params.journey, Number(raw));
+        return { journey: spec.journey, version: spec.version, warnings: lintSpec(spec) };
       } catch (err) {
         return reply.code(statusFor(err)).send({ error: (err as Error).message });
       }

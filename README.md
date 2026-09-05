@@ -33,8 +33,9 @@ npm run simulate       # M2 — 500 personas, scorecards, alerts, an A/B scorebo
 npm run roi            # M3 — attribute ROI, derive findings, ask the copilot
 ```
 
-`npm run roi` is the one to run before a demo: it seeds v3, v4 and v5 and leaves every
-console tab with something to show.
+**Each one resets the database**, so they are alternatives rather than a sequence: the
+console shows whichever you ran last. `npm run roi` is the one to run before a demo — it
+publishes v3, v4 and v5 and leaves every tab with something to show.
 
 Then bring up the console:
 
@@ -43,12 +44,22 @@ npm start -w @midfunnel/web        # API on :3000
 npm run dev -w @midfunnel/console  # console on :5173
 ```
 
-**No API key is needed.** Without one the platform substitutes a deterministic extractor
-and an offline copilot, and says so loudly on every screen that shows their output. The
-data is real either way; the reasoning is not. Add `OPENAI_API_KEY` to `.env` for the real
-thing — `.env` is searched for from the working directory upward and **overrides** the
-ambient environment, because a GUI app handing a process a stale credential it never asked
-for is an expensive hour to lose.
+**No API key is needed.** Without one the platform substitutes a deterministic keyword
+extractor and an offline copilot, and says so on every screen that shows their output. The
+data is real either way; the reasoning is not. Concretely, with no key:
+
+- Replay, A/B, ROI and the copilot's *numbers* are unaffected — they are folds over the
+  event log, not model output
+- The Simulate tab collects around 51% of evidence rather than the ~86% a real extractor
+  manages, so its quality figures are a floor, not a forecast
+- The copilot routes keywords to the same tools instead of reasoning, and stamps the answer
+  `offline`
+
+Add `OPENAI_API_KEY` to `.env` for the real thing. `.env` is searched for from the working
+directory upward and **overrides** the ambient environment, because a GUI app handing a
+process a stale credential it never asked for is an expensive hour to lose. Leave the value
+empty rather than writing a placeholder — a placeholder that looks like a key is detected
+and refused, but an unrecognised one would just produce a confident 401.
 
 ---
 
@@ -66,6 +77,12 @@ for is an expensive hour to lose.
 | 8 | **No big bang** — the same scoreboard pointed at a parallel-run cohort | A/B tab | Adoption risk |
 
 Moment 1 is the pitch. Moments 2–7 are why it compounds. Moment 8 is why it is safe.
+
+**On the Simulate tab, v4 reports 0% qualified. That is the product working.** The static
+check above the button says why before you press it: v4's *required* evidence tops out at
+65 against a threshold of 70, so it can never qualify anyone. v5 makes `decision_maker`
+required and qualifies 4.5%, which is what the A/B tab then measures. A journey that cannot
+do what it claims is caught by reading the spec, not by waiting for a bad quarter.
 
 ---
 
@@ -182,7 +199,7 @@ Reasoning effort, not prompt caching, is the cost lever: on a real call output r
 ## Tests
 
 ```bash
-npm test          # 323 tests
+npm test          # 326 tests
 npm run typecheck
 ```
 
