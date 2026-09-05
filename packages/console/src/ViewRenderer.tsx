@@ -9,6 +9,10 @@ export type View =
  * model never sends markup, so there is nothing here to sanitise — every value
  * below lands in a text node or a width, never in HTML.
  */
+/** Small values still need to read as numbers, not as "0". */
+const format = (v: number) =>
+  Number.isInteger(v) ? String(v) : v.toFixed(Math.abs(v) < 1 ? 3 : 1);
+
 export function ViewRenderer({ view }: { view: View }) {
   if (view.kind === "stat") {
     return (
@@ -36,7 +40,7 @@ export function ViewRenderer({ view }: { view: View }) {
     );
   }
 
-  const max = Math.max(1, ...view.series.map((s) => Math.abs(s.value)));
+  const max = Math.max(...view.series.map((s) => Math.abs(s.value)), Number.EPSILON);
   return (
     <div style={{ marginTop: 16 }}>
       <h3 className="view-title">{view.title}</h3>
@@ -49,7 +53,7 @@ export function ViewRenderer({ view }: { view: View }) {
               style={{ width: `${(Math.abs(s.value) / max) * 100}%` }}
             />
           </div>
-          <div className="bar-value">{s.value}{view.unit ?? ""}</div>
+          <div className="bar-value">{format(s.value)}{view.unit ?? ""}</div>
         </div>
       ))}
     </div>

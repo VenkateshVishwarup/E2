@@ -11,7 +11,12 @@ import type { Answer, ProposedDiff, View } from "./types.js";
 const viewSchema = z.object({
   kind: z.enum(["bar", "table", "stat", "none"]),
   title: z.string(),
-  unit: z.string().nullable(),
+  // A short suffix, not a caption. Left open, the model returns things like
+  // "conversion rate" and every bar renders "0.002conversion rate".
+  unit: z.string().max(4).nullable()
+    .describe('Short suffix appended to each value, e.g. "%" or "s". Scale the ' +
+              'values to match it — a rate shown with "%" must be 8.7, not 0.087. ' +
+              "Null when the numbers need no suffix."),
   series: z.array(z.object({
     label: z.string(),
     value: z.number(),
@@ -134,7 +139,17 @@ export class Copilot {
       }
 
       for (const call of calls) {
-        input.push(call as unknown as Record<string, unknown>);
+        // Echo back only the four fields the API defines. `responses.parse`
+        // decorates each tool call with `parsed_arguments` for the caller's
+        // convenience, and sending that SDK-only field back is rejected with
+        // "Unknown parameter: input[1].parsed_arguments" — which is the whole
+        // second turn of every tool-using conversation.
+        input.push({
+          type: "function_call",
+          call_id: call.call_id,
+          name: call.name,
+          arguments: call.arguments,
+        });
         used.push(call.name);
         const output = await this.run(call.name, call.arguments, journey)
           .then((r) => {

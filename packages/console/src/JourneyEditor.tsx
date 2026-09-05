@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { VersionPicker } from "./VersionPicker.js";
 
 interface SpecWarning { code: string; message: string }
 interface LintResult {
@@ -15,14 +16,22 @@ export function JourneyEditor({ journey, onPublished }:
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The YAML exactly as published, so an edit is distinguishable from a load. */
+  const [pristine, setPristine] = useState("");
+  /** Guards against a slow load landing after a newer selection. */
+  const request = useRef(0);
 
   const load = async (version: number) => {
+    const seq = ++request.current;
     setError(null); setNotice(null);
+    setLoaded(version);
     const r = await fetch(`/api/journeys/${encodeURIComponent(journey)}/source?version=${version}`);
+    if (seq !== request.current) return;   // a newer selection won
     if (!r.ok) { setError((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`); return; }
     const body = await r.json();
+    if (seq !== request.current) return;
     setYaml(body.yaml);
-    setLoaded(version);
+    setPristine(body.yaml);
   };
 
   useEffect(() => {
@@ -66,6 +75,7 @@ export function JourneyEditor({ journey, onPublished }:
       const body = await r.json();
       if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
       setNotice(`Published v${body.version}. It is live — start a chat and you will talk to it.`);
+      setPristine(yaml);
       const list = await fetch(`/api/journeys/${encodeURIComponent(journey)}/versions`);
       if (list.ok) setVersions((await list.json()).versions);
       setLoaded(body.version);
@@ -75,6 +85,7 @@ export function JourneyEditor({ journey, onPublished }:
   };
 
   const alreadyPublished = lint?.version !== undefined && versions.includes(lint.version);
+  const dirty = yaml !== "" && yaml !== pristine;
 
   return (
     <>
@@ -83,17 +94,28 @@ export function JourneyEditor({ journey, onPublished }:
         no separate deploy step, and the next chat session is served by what you publish.
       </p>
 
-      <div className="ask">
-        <select className="ask-input" value={loaded ?? ""} disabled={busy}
-                onChange={(e) => void load(Number(e.target.value))} aria-label="Load a version">
-          {versions.map((v) => <option key={v} value={v}>Load v{v}</option>)}
-        </select>
+      {/* A dropdown whose options read "Load v4" looks like a button you have
+          yet to press. It is a state control: it says which version you are
+          editing, and the line beneath says what has happened to it. */}
+      <div className="pickers">
+        {loaded !== null && (
+          <VersionPicker label="editing" versions={versions} value={loaded}
+                         onChange={(v) => void load(v)} disabled={busy} />
+        )}
         <button className="btn" onClick={bumpVersion} disabled={busy}>Bump version</button>
         <button className="btn" onClick={() => void publish()}
                 disabled={busy || !lint?.valid || alreadyPublished}>
           {busy ? "Publishing…" : `Publish${lint?.version ? ` v${lint.version}` : ""}`}
         </button>
       </div>
+
+      <p className="muted">
+        {dirty
+          ? <>Editing <strong>v{loaded}</strong> with unsaved changes
+              {lint?.version !== loaded && lint?.version ? <> — will publish as v{lint.version}</> : null}.</>
+          : <>Showing <strong>v{loaded}</strong> exactly as published.</>}
+        {versions[0] !== undefined && <> v{versions[0]} is the version chat serves.</>}
+      </p>
 
       {/* Versions are immutable, so say why the button is disabled rather than
           letting someone press it and read a 409. */}
