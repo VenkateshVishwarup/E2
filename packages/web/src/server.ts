@@ -118,7 +118,7 @@ export async function main(): Promise<void> {
                    "Fine on a laptop; set one for anything reachable.");
     }
     const app = buildServer(
-      { registry, store: events, replay, simulate, attribution, insights, copilot, chat },
+      { registry, store: events, replay, simulate, attribution, insights, copilot, chat, offline: !credentialled },
       token,
     );
     const port = Number(process.env.PORT ?? 3000);

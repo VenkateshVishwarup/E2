@@ -22,6 +22,17 @@ export interface StepOptions {
    * conversation; false for replay, where the transcript is already complete.
    */
   allowFollowUp?: boolean;
+  /**
+   * Trust the evidence already on the state instead of extracting again.
+   *
+   * Replay uses this to run both arms against ONE extraction of the same
+   * transcript. That halves the model calls, but the reason to do it is
+   * correctness rather than cost: extracting separately per arm injects model
+   * variance into a comparison whose entire purpose is to isolate the change
+   * between two journey versions. Only valid when both specs declare the same
+   * evidence contract — the caller checks that.
+   */
+  reuseEvidence?: boolean;
 }
 
 const HUMAN_REQUEST = /\b(human|agent|person|representative|talk to someone|real person)\b/i;
@@ -36,6 +47,11 @@ export class AgentRuntime {
   constructor(extractor?: EvidenceExtractor, client?: OpenAI) {
     this.client = client ?? createClient();
     this.extractor = extractor ?? new EvidenceExtractor(this.client, this.meter);
+  }
+
+  /** Extraction on its own, for callers that need it once and reuse it. */
+  async extract(spec: JourneySpec, turns: LeadState["turns"]) {
+    return this.extractor.extract(spec, turns);
   }
 
   /**
@@ -67,7 +83,9 @@ export class AgentRuntime {
     }
 
     // 3. Extract, then merge over what is already known.
-    const fresh = await this.extractor.extract(spec, state.turns);
+    const fresh = opts.reuseEvidence
+      ? {}
+      : await this.extractor.extract(spec, state.turns);
     if (Object.keys(fresh).length > 0) actions.push({ kind: "extract", evidence: fresh });
     const evidence: Evidence = { ...state.evidence, ...fresh };
 

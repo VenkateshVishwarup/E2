@@ -16,6 +16,7 @@ const STUB = {
   insights: { insights: vi.fn() } as never,
   copilot: { ask: vi.fn() },
   chat: { start: vi.fn(), send: vi.fn(), state: vi.fn() },
+  offline: true,
 };
 
 interface OpenApi {

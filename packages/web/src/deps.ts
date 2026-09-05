@@ -40,6 +40,8 @@ export interface ServerDeps {
   insights: InsightEngine;
   copilot: CopilotService;
   chat: ChatSessions;
+  /** True when no model credential is configured, so nothing can cost money. */
+  offline: boolean;
 }
 
 /**

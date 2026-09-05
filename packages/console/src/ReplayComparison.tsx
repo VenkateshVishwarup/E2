@@ -9,6 +9,7 @@ interface Lift {
   absoluteLift: number;
   ci95: [number, number];
   observedConversionByDecision: Record<string, number>;
+  cost: { leads: number; extracted: number; reused: number; usd: number };
   divergent: Array<{
     leadId: string;
     a: { decision: string };
@@ -18,6 +19,14 @@ interface Lift {
 }
 
 const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+
+const COHORTS = [50, 200, 500, 1000, 2000];
+const DEFAULT_COHORT = 200;
+
+interface Estimate {
+  available: number; leads: number; extracted: number;
+  reused: number; estimatedUsd: number; modelled: boolean;
+}
 
 export function ReplayComparison(
   { journey, versions }: { journey: string; versions: number[] },
@@ -33,41 +42,88 @@ export function ReplayComparison(
   }, [versions]);
 
   const [lift, setLift] = useState<Lift | null>(null);
+  const [estimate, setEstimate] = useState<Estimate | null>(null);
+  const [n, setN] = useState(DEFAULT_COHORT);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Estimating is free. Running is not, so nothing runs until asked.
   useEffect(() => {
     if (!a || !b) return;
     setLift(null); setError(null);
-    fetch("/api/replay", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ journey, a, b }),
-    })
-      .then(async (r) => {
-        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
-        return r.json();
-      })
-      .then(setLift)
-      .catch((e: Error) => setError(e.message));
-  }, [journey, a, b]);
+    void (async () => {
+      const r = await fetch(`/api/journeys/${encodeURIComponent(journey)}/replay-estimate` +
+                            `?a=${a}&b=${b}&n=${n}`);
+      if (r.ok) setEstimate(await r.json());
+    })();
+  }, [journey, a, b, n]);
 
-  const pickers = (
-    <div className="pickers">
-      <VersionPicker label="baseline" versions={versions} value={a} onChange={setA} exclude={b} />
-      <VersionPicker label="candidate" versions={versions} value={b} onChange={setB} exclude={a} />
-    </div>
-  );
+  const run = async () => {
+    setBusy(true); setError(null); setLift(null);
+    try {
+      const r = await fetch("/api/replay", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ journey, a, b, n }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
+      setLift(await r.json());
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
 
   if (versions.length < 2) {
     return <p className="muted">Replay compares two versions; publish another one first.</p>;
   }
-  if (error) return <>{pickers}<p className="err">Replay failed: {error}</p></>;
-  if (!lift) return <>{pickers}<p className="muted">Replaying…</p></>;
+
+  const controls = (
+    <>
+      <p className="muted">
+        Take leads that already happened and ask what a different version would have done
+        with them.
+      </p>
+      <div className="pickers">
+        <VersionPicker label="baseline" versions={versions} value={a} onChange={setA} exclude={b} disabled={busy} />
+        <VersionPicker label="candidate" versions={versions} value={b} onChange={setB} exclude={a} disabled={busy} />
+        <label className="picker">
+          <span className="picker-label">cohort</span>
+          <select value={n} disabled={busy} onChange={(e) => setN(Number(e.target.value))}>
+            {COHORTS.map((c) => <option key={c} value={c}>{c.toLocaleString()} leads</option>)}
+          </select>
+        </label>
+      </div>
+
+      {/* A screen that can spend money must say so before it does. */}
+      {estimate && (
+        <p className="muted">
+          {estimate.reused.toLocaleString()} of {estimate.leads.toLocaleString()} already
+          carry their evidence and cost nothing.{" "}
+          {estimate.extracted === 0
+            ? "Nothing needs re-extracting, so this replay is free."
+            : estimate.modelled
+              ? `${estimate.extracted.toLocaleString()} need a model call — about $${estimate.estimatedUsd.toFixed(2)}.`
+              : `${estimate.extracted.toLocaleString()} need extraction, free on the offline extractor.`}
+          {" "}{estimate.available.toLocaleString()} leads available in total.
+        </p>
+      )}
+
+      <button className="btn" disabled={busy || !a || !b} onClick={() => void run()}>
+        {busy ? "Replaying…" : `Replay v${a} against v${b}`}
+      </button>
+    </>
+  );
+
+  if (error) return <>{controls}<p className="err">Replay failed: {error}</p></>;
+  if (!lift) return controls;
 
   return (
     <>
-      {pickers}
-      <p className="muted">{lift.n.toLocaleString()} historical leads</p>
+      {controls}
+      <p className="muted">
+        {lift.n.toLocaleString()} historical leads ·{" "}
+        {lift.cost.extracted === 0
+          ? "no model calls needed"
+          : `${lift.cost.extracted.toLocaleString()} extractions, $${lift.cost.usd.toFixed(4)}`}
+      </p>
 
       <div className="arms">
         <Arm label={`v${lift.a.version} (current)`} rate={lift.a.qualifiedRate} />

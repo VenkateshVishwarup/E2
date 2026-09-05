@@ -40,6 +40,16 @@ const ANSWER = {
   text: "needs_financing converts 31% worse.", usedTools: ["insights"], offline: true,
 };
 
+const STUB = {
+  registry: { list: vi.fn(), get: vi.fn(), diff: vi.fn(), latest: vi.fn() } as never,
+  simulate: { run: vi.fn(), compare: vi.fn() } as never,
+  attribution: { roll: vi.fn() } as never,
+  insights: { insights: vi.fn() } as never,
+  copilot: { ask: vi.fn() },
+  chat: { start: vi.fn(), send: vi.fn(), state: vi.fn() },
+  offline: true,
+};
+
 let pool: Pool;
 let app: ReturnType<typeof buildServer>;
 let copilotAsk: ReturnType<typeof vi.fn>;
@@ -60,6 +70,7 @@ beforeEach(async () => {
     insights: { insights: vi.fn().mockResolvedValue({ journey: "j", leadsAnalysed: 30, findings: [], skipped: [] }) } as never,
     copilot: { ask: copilotAsk },
     chat: { start: vi.fn(), send: vi.fn(), state: vi.fn() },
+  offline: true,
   });
 });
 afterAll(async () => { await pool.end(); });
@@ -174,6 +185,7 @@ describe("intelligence routes", () => {
       insights: { insights: vi.fn().mockRejectedValue(new Error("connection refused")) } as never,
       copilot: { ask: vi.fn() },
   chat: { start: vi.fn(), send: vi.fn(), state: vi.fn() },
+  offline: true,
     });
     expect((await failing.inject({ url: "/api/journeys/nope/roi" })).statusCode).toBe(404);
     expect((await failing.inject({ url: "/api/journeys/j/insights" })).statusCode).toBe(502);
@@ -228,5 +240,40 @@ describe("authoring", () => {
       const res = await app.inject({ method: "POST", url: "/api/journeys/publish", payload: { yaml } });
       expect(res.statusCode).toBe(400);
     }
+  });
+});
+
+describe("cohort sampling", () => {
+  it("spreads a capped replay across the cohort instead of taking the oldest slice", async () => {
+    // Leads arrive in event order, so a prefix is the oldest part of the
+    // campaign — a different creative mix and a different time of day.
+    const seen: string[][] = [];
+    const capturing = buildServer({
+      ...STUB, store: new EventStore(pool, "t1"),
+      replay: { replay: vi.fn(async (_j, _a, _b, ids: string[]) => { seen.push(ids); return LIFT; }) } as never,
+    });
+    const store = new EventStore(pool, "t1");
+    await store.appendMany(Array.from({ length: 100 }, (_, i) => ({
+      leadId: `L${String(i).padStart(3, "0")}`, journey: "mba-admissions-qualification",
+      journeyVersion: 4, agentId: "a", type: "LeadIngested" as const, payload: {},
+      occurredAt: new Date(Date.UTC(2026, 5, 1, 0, i)),
+    })));
+
+    await capturing.inject({
+      method: "POST", url: "/api/replay",
+      payload: { journey: "mba-admissions-qualification", a: 3, b: 4, n: 10 },
+    });
+
+    const ids = seen[0]!;
+    expect(ids).toHaveLength(10);
+    expect(ids[0]).toBe("L000");
+    // Reaches the far end of the cohort, which a prefix never would.
+    expect(ids.at(-1)).toBe("L090");
+    // Deterministic: the same cap always yields the same leads.
+    await capturing.inject({
+      method: "POST", url: "/api/replay",
+      payload: { journey: "mba-admissions-qualification", a: 3, b: 4, n: 10 },
+    });
+    expect(seen[1]).toEqual(ids);
   });
 });

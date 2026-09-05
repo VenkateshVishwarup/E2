@@ -166,3 +166,35 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   background: var(--card); color: var(--fg); font: inherit;
 }
 .picker select:disabled { opacity: .5; }
+
+.masthead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.masthead h1 { margin: 0; }
+.sections { display: flex; gap: 6px; margin: 18px 0 0; }
+.section {
+  padding: 7px 16px; border: 1px solid var(--line); border-radius: 999px;
+  background: none; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer;
+}
+.section[aria-selected="true"] {
+  background: var(--fg); border-color: var(--fg);
+  color: var(--bg); font-weight: 600;
+}
+.tabs { align-items: center; }
+.section-caption { margin-left: auto; font-size: 12px; padding-bottom: 8px; }
+@media (max-width: 700px) { .section-caption { display: none; } }
+
+.empty { text-align: center; padding: 56px 20px; }
+.empty h2 { margin: 0 0 8px; }
+.empty .ask { justify-content: center; }
+.empty p { max-width: 460px; margin: 0 auto 20px; }
+
+.finding { border-left: 3px solid var(--line); padding: 2px 0 2px 14px; margin: 20px 0; }
+.finding-head { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.finding-claim { font-size: 15px; margin: 6px 0 4px; line-height: 1.45; }
+.finding-do { color: var(--observed); margin: 6px 0 0; }
+.sev {
+  text-transform: uppercase; letter-spacing: .05em; font-size: 10px; font-weight: 600;
+  padding: 2px 7px; border-radius: 999px; border: 1px solid;
+}
+.sev.high { color: var(--danger); border-color: var(--danger); }
+.sev.medium { color: var(--modelled); border-color: var(--modelled); }
+.sev.low { color: var(--muted); border-color: var(--line); }

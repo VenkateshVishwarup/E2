@@ -309,6 +309,40 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/journeys/{journey}/replay-estimate:
+    get:
+      operationId: estimateReplayCost
+      tags: [Replay]
+      summary: What a replay would cost, before committing to it
+      description: |
+        Opening a replay screen used to fire the full job on mount — thousands of leads,
+        hundreds of model calls, real money, no warning. Nothing that can spend should
+        start without someone choosing to, so this answers the question first.
+
+        Only leads whose evidence is **not already on the record** cost anything. A lead
+        the journey has already run carries its `EvidenceExtracted` events, and re-deriving
+        them from the same transcript would pay a model call to reproduce a recorded fact.
+      parameters:
+        - $ref: "#/components/parameters/JourneyName"
+        - $ref: "#/components/parameters/VersionA"
+        - $ref: "#/components/parameters/VersionB"
+        - $ref: "#/components/parameters/CohortSize"
+      responses:
+        "200":
+          description: How many leads, how many need extraction, and what that costs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayEstimate"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/replay:
     post:
       operationId: replayCohort
@@ -707,6 +741,16 @@ components:
         type: string
         pattern: "^web_[0-9a-f]{16}$"
         example: web_3f9a21c07b4e6d15
+
+    CohortSize:
+      name: n
+      in: query
+      required: false
+      description: Cap the cohort to the first N leads. Omit for all of them.
+      schema:
+        type: integer
+        minimum: 1
+        example: 200
 
     ReportingCurrency:
       name: currency
@@ -1215,6 +1259,13 @@ components:
           minimum: 1
           description: The candidate version.
           example: 4
+        n:
+          type: integer
+          minimum: 1
+          description: |
+            Cap the cohort to the first N leads. A cap is the difference between a screen
+            you can click and one that starts a six-figure token job.
+          example: 200
         leadIds:
           type: array
           description: |
@@ -1229,6 +1280,69 @@ components:
         journey: mba-admissions-qualification
         a: 3
         b: 4
+
+    ReplayEstimate:
+      type: object
+      required: [available, leads, extracted, reused, estimatedUsd, modelled]
+      additionalProperties: false
+      properties:
+        available:
+          type: integer
+          minimum: 0
+          description: Leads on this journey in total.
+          example: 2000
+        leads:
+          type: integer
+          minimum: 0
+          description: Leads this replay would cover, after any cap.
+          example: 200
+        extracted:
+          type: integer
+          minimum: 0
+          description: Of those, how many need a model call. The only ones that cost.
+          example: 74
+        reused:
+          type: integer
+          minimum: 0
+          description: How many already carry their evidence on the record.
+          example: 126
+        estimatedUsd:
+          type: number
+          format: double
+          minimum: 0
+          description: From a measured per-extraction cost, not a guess.
+          example: 0.185
+        modelled:
+          type: boolean
+          description: |
+            False when no credential is configured, in which case the deterministic
+            extractor runs and the replay is free.
+          example: true
+      example:
+        available: 2000
+        leads: 200
+        extracted: 74
+        reused: 126
+        estimatedUsd: 0.185
+        modelled: true
+
+    ReplayCost:
+      type: object
+      description: |
+        What a replay actually cost. Replay writes no events — it is a read over history —
+        so its spend appears in no `CostObserved` row and would otherwise be invisible.
+      required: [leads, extracted, reused, usd]
+      additionalProperties: false
+      properties:
+        leads: { type: integer, minimum: 0, example: 200 }
+        extracted: { type: integer, minimum: 0, example: 74 }
+        reused: { type: integer, minimum: 0, example: 126 }
+        usd: { type: number, format: double, minimum: 0, example: 0.1832 }
+      example:
+        leads: 200
+        extracted: 74
+        reused: 126
+        usd: 0.1832
 
     ReplayArm:
       type: object
@@ -1319,7 +1433,7 @@ components:
     Lift:
       type: object
       required:
-        [n, a, b, absoluteLift, ci95, observedConversionByDecision, divergent]
+        [n, a, b, absoluteLift, ci95, observedConversionByDecision, divergent, cost]
       additionalProperties: false
       properties:
         n:
@@ -1353,6 +1467,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Divergence"
+        cost:
+          $ref: "#/components/schemas/ReplayCost"
       example:
         n: 2000
         a: { version: 3, qualifiedRate: 0.018, projectedConversions: 66.1 }
@@ -1361,6 +1477,7 @@ components:
         ci95: [0.023, 0.038]
         observedConversionByDecision: { hot: 0.361, warm: 0.138, cold: 0.008 }
         divergent: []
+        cost: { leads: 200, extracted: 74, reused: 126, usd: 0.1832 }
 
     ConfidenceInterval:
       type: array

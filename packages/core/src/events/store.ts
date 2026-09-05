@@ -132,7 +132,39 @@ export class EventStore {
 
   /** Reconstruct everything known about a lead. This is the only read model. */
   async fold(leadId: string): Promise<LeadState> {
-    const events = await this.query({ leadId });
+    return foldEvents(leadId, await this.query({ leadId }));
+  }
+
+  /**
+   * Fold a whole cohort in ONE query.
+   *
+   * Replaying 2000 leads used to issue 2000 round trips, which dominated the
+   * wall time before a single model call was made. Anything that folds a cohort
+   * should use this; `fold` remains for the single-lead case.
+   */
+  async foldMany(leadIds: readonly string[]): Promise<LeadState[]> {
+    if (leadIds.length === 0) return [];
+
+    const { rows } = await this.pool.query<EventRow>(
+      `SELECT ${COLS} FROM events
+       WHERE tenant_id = $1 AND env = $2 AND lead_id = ANY($3)
+       ORDER BY occurred_at ASC, id ASC`,
+      [this.tenantId, this.env, leadIds],
+    );
+
+    const byLead = new Map<string, StoredEvent[]>();
+    for (const row of rows) {
+      const e = toStored(row);
+      const bucket = byLead.get(e.leadId);
+      if (bucket) bucket.push(e); else byLead.set(e.leadId, [e]);
+    }
+    // Caller order is preserved: replay pairs arms by index.
+    return leadIds.map((id) => foldEvents(id, byLead.get(id) ?? []));
+  }
+}
+
+function foldEvents(leadId: string, events: readonly StoredEvent[]): LeadState {
+  {
     const state: LeadState = {
       leadId,
       journey: events[0]?.journey ?? "",
