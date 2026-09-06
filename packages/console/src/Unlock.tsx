@@ -1,13 +1,17 @@
 import { useState } from "react";
 import { setToken } from "./auth.js";
 
-export function Unlock({ onUnlocked }: { onUnlocked: () => void }) {
+export function Unlock() {
   const [value, setValue] = useState("");
 
   const submit = () => {
     if (!value.trim()) return;
     setToken(value.trim());
-    onUnlocked();
+    // Reload rather than re-render. Every screen fetched once already and got
+    // a 401; unlocking has to re-run all of them, and a reload does that with
+    // no stale requests still in flight. It is a sign-in — a reload is what
+    // anyone expects.
+    window.location.reload();
   };
 
   return (

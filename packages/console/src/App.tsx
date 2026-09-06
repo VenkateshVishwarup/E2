@@ -105,7 +105,7 @@ export function App() {
         <span className="section-caption muted">{section.caption}</span>
       </div>
 
-      {locked && <Unlock onUnlocked={() => { setLocked(false); setPublished((n) => n + 1); }} />}
+      {locked && <Unlock />}
 
       {!locked && tab === "Overview" && (
         <Overview journey={JOURNEY} versions={versions} onGo={(t) => setTab(t as Tab)} />

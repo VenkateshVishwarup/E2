@@ -30,14 +30,24 @@ export function installAuth(): void {
 
   window.fetch = async (input, init) => {
     const url = typeof input === "string" ? input : (input as Request).url;
-    const token = storedToken();
+    const token = storedToken();   // captured now, so the 401 check can compare
     const headers = new Headers(init?.headers ?? (input as Request)?.headers);
     if (token && url.startsWith("/api")) headers.set("authorization", `Bearer ${token}`);
 
     const res = await original(input, { ...init, headers });
     if (res.status === 401) {
-      setToken(null);
-      window.dispatchEvent(new CustomEvent(LOCKED));
+      // Which 401 is this? Requests made before a token was entered resolve
+      // *after* it is, and treating those as a rejection wiped the token the
+      // moment it was set — the unlock screen came straight back with an empty
+      // localStorage. Only a request that carried the token still in storage
+      // says anything about whether that token is good.
+      const current = storedToken();
+      if (token !== null && token === current) {
+        setToken(null);
+        window.dispatchEvent(new CustomEvent(LOCKED));
+      } else if (current === null) {
+        window.dispatchEvent(new CustomEvent(LOCKED));
+      }
     }
     return res;
   };
