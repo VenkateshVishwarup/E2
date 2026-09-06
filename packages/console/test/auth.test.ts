@@ -72,3 +72,18 @@ describe("the API token interceptor", () => {
     expect(h.locks).toHaveLength(1);
   });
 });
+
+describe("the unlock screen", () => {
+  it("recognises a provider key and refuses to transmit it", async () => {
+    // A page that mentions a model credential and asks for a token invites
+    // exactly this confusion. A key typed into the wrong box should not leave
+    // the browser.
+    const { Unlock } = await import("../src/Unlock.js");
+    const source = (await import("node:fs")).readFileSync(
+      new URL("../src/Unlock.tsx", import.meta.url), "utf8");
+    expect(Unlock).toBeTypeOf("function");
+    expect(source).toMatch(/\/\^sk-\/\.test\(token\)/);
+    // And the check must come before any fetch.
+    expect(source.indexOf("sk-")).toBeLessThan(source.indexOf("await fetch"));
+  });
+});

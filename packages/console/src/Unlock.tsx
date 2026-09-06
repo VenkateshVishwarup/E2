@@ -17,6 +17,19 @@ export function Unlock() {
   const submit = async () => {
     const token = value.trim();
     if (!token || busy) return;
+
+    // A provider key is not this token, and the two are easy to confuse when a
+    // page mentions both. Say so before sending it anywhere — a credential
+    // typed into the wrong box should not leave the browser.
+    if (/^sk-/.test(token)) {
+      setError(
+        "That looks like an OpenAI key. This field wants the deployment's access " +
+        "token — the value of API_TOKEN on the server — not a model credential. " +
+        "Nothing was sent.",
+      );
+      return;
+    }
+
     setBusy(true); setError(null);
     try {
       const r = await fetch("/api/limits", { headers: { authorization: `Bearer ${token}` } });
@@ -41,17 +54,21 @@ export function Unlock() {
 
   return (
     <div className="empty">
-      <h2>This deployment needs a token</h2>
+      <h2>Sign in</h2>
       <p className="muted">
-        It holds a model credential, so it is not left open — anyone with the URL could
-        otherwise spend against it. The token is whatever <code>API_TOKEN</code> is set to on
-        the server. It is kept in this browser only.
+        Enter the deployment's <strong>access token</strong> — the value of{" "}
+        <code>API_TOKEN</code> on the server. Not an OpenAI key, and not a password.
+      </p>
+      <p className="muted">
+        This deployment is gated because anyone with the URL could otherwise run work
+        against it. The token is kept in this browser only.
       </p>
       <div className="ask" style={{ maxWidth: 460, margin: "0 auto" }}>
         {/* Not a password: a password manager offering to fill this silently
             replaces the token with a saved credential for the domain. */}
         <input className="ask-input" type="text" value={value} autoFocus
-               name="e2-api-token" placeholder="API token" aria-label="API token"
+               name="e2-access-token" placeholder="Access token (API_TOKEN)"
+               aria-label="Deployment access token"
                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
                data-1p-ignore data-lpignore="true" data-form-type="other"
                disabled={busy}
