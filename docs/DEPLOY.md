@@ -150,6 +150,25 @@ out. `framework: null` opts out of preset detection for the same reason.
 `docs/api/openapi.yaml` is still the source; `npm run okf:bundle` regenerates the module,
 and a test asserts they match.
 
+### The function is a committed bundle
+
+`api/index.js` is generated from `server/api-handler.ts` by `npm run build:api` and
+**committed**. Regenerate it whenever anything it imports changes; the test suite fails if
+you forget. `server/README.md` has the full reasoning; the short version is that Vercel's
+Node runtime does not bundle workspace imports and evaluates the `functions` glob before
+running the build, so the artifact has to exist at clone time.
+
+Two failures that only appear once the function is actually invoked, both now covered by a
+test that loads the bundle:
+
+- **Workspace imports left external** — `Cannot find module '/var/task/node_modules/
+  @midfunnel/core/src/db/client.ts'`. The lambda has no TypeScript source.
+- **`pg` is CommonJS inside an ESM bundle** — `Dynamic require of "events" is not
+  supported`. The build injects a `createRequire` banner to bridge it.
+
+Neither shows up in `vercel dev`, which runs where the source exists, and neither shows up
+in a build that only checks the bundle's bytes. Loading it is the check that matters.
+
 ### Verifying the build before pushing
 
 ```bash

@@ -22,11 +22,14 @@
     "db:migrate:remote": "tsx scripts/migrate-remote.ts",
     "seed:remote": "tsx scripts/close-the-loop.ts",
     "okf:bundle": "tsx scripts/bundle-okf.ts",
-    "build:console": "npm run okf:bundle && npm run build -w @midfunnel/console"
+    "build:console": "npm run okf:bundle && npm run build -w @midfunnel/console",
+    "build:api": "esbuild server/api-handler.ts --bundle --platform=node --target=node24 --format=esm --outfile=api/index.js --log-level=warning --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
+    "build:vercel": "npm run build -w @midfunnel/console && npm run build:api"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
     "@types/pg": "^8.11.0",
+    "esbuild": "^0.21.5",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
