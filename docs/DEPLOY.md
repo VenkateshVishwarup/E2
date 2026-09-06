@@ -118,11 +118,23 @@ function would run on the default timeout rather than 60 seconds.
 **`/health` is rewritten to `/api/health`,** and Fastify serves both. A host that routes
 everything under `/api` to one function cannot reach a path outside that prefix.
 
-**The console builds to `dist/` at the repository root, not beside its package.**
-Vercel's framework detection recognises Vite and applies its default output directory,
-which overrode `outputDirectory` in vercel.json and failed the deploy with *"No Output
-Directory named dist"*. Emitting where every reading of the config agrees removes the
-question rather than answering it; `framework: null` opts out of detection as well.
+**Root Directory must be the repository root.** This is a project setting in the Vercel
+dashboard, not something the repo can express, and getting it wrong produces a failure that
+looks like a build-config problem:
+
+> Error: No Output Directory named "dist" found after the Build completed.
+
+If Root Directory is `packages/console`, Vercel never reads the root `vercel.json` — so
+`outputDirectory`, `functions` and `rewrites` are all silently ignored, and **the API is
+never built at all**. The result would be a static console with no backend, every screen
+erroring. The tell is in the install line: `packages/console` alone needs 71 packages, the
+whole workspace 198. A log reading `added 72 packages` is installing the console only.
+
+Set it to `./` under **Settings → General → Root Directory**.
+
+**The console builds to `dist/` at the repository root, not beside its package**, so that
+Vite's own default and `outputDirectory` name the same place and neither can be the odd one
+out. `framework: null` opts out of preset detection for the same reason.
 
 **The OpenAPI document is imported, not read from disk.** esbuild traces imports, so a
 `readFileSync` of a path outside the bundle finds nothing inside a function —
