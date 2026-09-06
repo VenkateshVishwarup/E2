@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OKF } from "../src/okf-content.js";
+import { OPENAPI_YAML } from "../../web/src/routes/openapi-content.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const OKF_DIR = join(ROOT, "okf");
@@ -40,5 +41,15 @@ describe("the bundled knowledge file matches the source", () => {
         expect(OKF[key], `${name} links to ${m[1]} which is not a document`).toBeDefined();
       }
     }
+  });
+});
+
+describe("the bundled API document matches the source", () => {
+  it("matches docs/api/openapi.yaml byte for byte", () => {
+    // Bundled rather than read from disk: esbuild traces imports, so a
+    // `readFileSync` of a path outside the bundle finds nothing inside a
+    // serverless function — a failure that only appears in production.
+    const onDisk = readFileSync(join(ROOT, "docs/api/openapi.yaml"), "utf8");
+    expect(OPENAPI_YAML, "stale — run `npm run okf:bundle`").toBe(onDisk);
   });
 });

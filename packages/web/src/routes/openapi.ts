@@ -1,24 +1,23 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import type { FastifyInstance } from "fastify";
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-export const SPEC_PATH = join(HERE, "../../../../docs/api/openapi.yaml");
+import { OPENAPI_YAML } from "./openapi-content.js";
 
 /**
- * Resolved from the module's own location, not the working directory. A
- * workspace script runs with cwd inside the package, and a spec that cannot be
- * found in the way people actually start the server is a spec nobody reads.
+ * The document is imported, not read from disk.
+ *
+ * It was read with `readFileSync` from a path relative to this module, which
+ * works for a long-lived server and not for a bundled serverless function:
+ * esbuild traces imports, so the file is simply not there and
+ * `/api/openapi.json` throws ENOENT. An import is traced.
+ *
+ * `docs/api/openapi.yaml` remains the source — it is reviewable in a diff and
+ * usable by anything that reads the repository — and a test asserts the
+ * generated module matches it.
  */
 let cached: { yaml: string; json: unknown } | null = null;
 
 export function openApiDocument(): { yaml: string; json: unknown } {
-  if (!cached) {
-    const yaml = readFileSync(SPEC_PATH, "utf8");
-    cached = { yaml, json: parseYaml(yaml) };
-  }
+  cached ??= { yaml: OPENAPI_YAML, json: parseYaml(OPENAPI_YAML) };
   return cached;
 }
 

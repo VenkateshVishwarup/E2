@@ -118,6 +118,18 @@ function would run on the default timeout rather than 60 seconds.
 **`/health` is rewritten to `/api/health`,** and Fastify serves both. A host that routes
 everything under `/api` to one function cannot reach a path outside that prefix.
 
+**The console builds to `dist/` at the repository root, not beside its package.**
+Vercel's framework detection recognises Vite and applies its default output directory,
+which overrode `outputDirectory` in vercel.json and failed the deploy with *"No Output
+Directory named dist"*. Emitting where every reading of the config agrees removes the
+question rather than answering it; `framework: null` opts out of detection as well.
+
+**The OpenAPI document is imported, not read from disk.** esbuild traces imports, so a
+`readFileSync` of a path outside the bundle finds nothing inside a function —
+`/api/openapi.json` would have thrown ENOENT in production and nowhere else.
+`docs/api/openapi.yaml` is still the source; `npm run okf:bundle` regenerates the module,
+and a test asserts they match.
+
 ### Verifying the build before pushing
 
 ```bash
