@@ -105,15 +105,23 @@ configuration.
 
 ### Three details in `vercel.json` that are not obvious
 
-**The function is `api/[...path].ts`, a catch-all.** Vercel's filesystem routing maps
-`api/index.ts` to `/api` only, so `/api/journeys/x/roi` would 404. Rewriting `/api/(.*)`
-to `/api` runs the function but hands Fastify the literal path `/api`, so *every* route
-404s — with the function running, which reads as a bug in the app rather than in the
-deployment. The catch-all reaches the function with the URL intact.
+**One function at `api/index.ts`, reached by a rewrite** — `/api/(.*)` to `/api`. The
+rewrite preserves the original URL, so Fastify routes on the real path. Verified, not
+assumed: `vercel dev` returns 200 and real data for
+`/api/journeys/mba-admissions-qualification/live`.
 
-**The `functions` key is `api/**/*.ts`, not the filename.** Those keys are globs, and
-`[...path]` reads as a character class — the config would silently not apply and the
-function would run on the default timeout rather than 60 seconds.
+**`api/[...path].ts` does not work here.** The catch-all filename is a Next.js convention;
+on a plain Node function Vercel compiles it to a *single-segment* matcher and 404s anything
+deeper:
+
+```
+{'src': '^/api/([^/]+)$', 'dest': '/api/[...path]?...path=$1'}   ← one segment
+{'src': '^/api(/.*)?$',   'status': 404}                          ← everything else
+```
+
+`/api/limits` would have worked and `/api/journeys/x/roi` would not — a failure shaped
+exactly like a routing bug in the app. Reading `.vercel/output/config.json` after a local
+build is how to see this.
 
 **`/health` is rewritten to `/api/health`,** and Fastify serves both. A host that routes
 everything under `/api` to one function cannot reach a path outside that prefix.

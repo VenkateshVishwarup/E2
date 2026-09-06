@@ -26,7 +26,7 @@ import type { FastifyInstance } from "fastify";
  */
 let ready: Promise<FastifyInstance> | null = null;
 
-function build(): Promise<FastifyInstance> {
+async function build(): Promise<FastifyInstance> {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set");
 
@@ -63,7 +63,10 @@ function build(): Promise<FastifyInstance> {
     offline: !credentialled,
   }, process.env.API_TOKEN ?? null);
 
-  return app.ready().then(() => app);
+  // `ready()` returns a PromiseLike, not a Promise — awaiting it is both
+  // correct and clearer than returning something typed as more than it is.
+  await app.ready();
+  return app;
 }
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {

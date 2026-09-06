@@ -12,7 +12,11 @@
   "rewrites": [
     {
       "source": "/health",
-      "destination": "/api/health"
+      "destination": "/api"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api"
     },
     {
       "source": "/((?!api|assets|favicon).*)",

@@ -108,7 +108,11 @@ export function parseSpec(yamlText: string): JourneySpec {
     );
   }
 
-  return { ...parsed, agent: { ...parsed.agent, dataScope: parsed.agent.data_scope } };
+  // `read` and `deny` carry zod defaults, so they are always present after
+  // parsing — but they are optional on the schema's input type, and a spread
+  // widens to that. Naming them keeps the guarantee the type claims.
+  const { read, deny } = parsed.agent.data_scope;
+  return { ...parsed, agent: { ...parsed.agent, dataScope: { read, deny } } };
 }
 
 /** Variables the runtime supplies per conversation rather than the spec. */

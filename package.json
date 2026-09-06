@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "engines": {
-    "node": ">=22"
+    "node": "24.x"
   },
   "scripts": {
     "db:up": "docker compose up -d",
