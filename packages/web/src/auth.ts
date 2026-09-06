@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
  * Paths that must answer without a credential: a load balancer probing health
  * and a client discovering the API surface. Everything else is guarded.
  */
-const OPEN = new Set(["/health", "/api/openapi.json", "/api/openapi.yaml"]);
+const OPEN = new Set(["/health", "/api/health", "/api/openapi.json", "/api/openapi.yaml"]);
 
 /**
  * Bearer-token guard, enabled by setting `API_TOKEN`.

@@ -69,6 +69,26 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/health:
+    get:
+      operationId: getHealthViaApi
+      tags: [Operations]
+      summary: Liveness probe, under the API prefix
+      description: |
+        Identical to `/health`. Both exist because a host that routes everything under
+        `/api` to a single function cannot reach a path outside that prefix, and a load
+        balancer conventionally probes the bare one.
+      security: []
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/openapi.json:
     get:
       operationId: getOpenApiDocument

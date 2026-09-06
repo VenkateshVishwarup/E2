@@ -96,12 +96,40 @@ fit, so setting it correctly is the whole fix.
 ## 3. Deploy
 
 ```bash
+npx vercel link      # once, to venkatesh-vishwarup-s-projects
 npx vercel --prod
 ```
 
-`vercel.json` already routes `/api/*` and `/health` to the function and everything else to
-the console bundle. Same origin, so the console's relative `fetch("/api/…")` calls work
-with no CORS and no configuration.
+Same origin, so the console's relative `fetch("/api/…")` calls work with no CORS and no
+configuration.
+
+### Three details in `vercel.json` that are not obvious
+
+**The function is `api/[...path].ts`, a catch-all.** Vercel's filesystem routing maps
+`api/index.ts` to `/api` only, so `/api/journeys/x/roi` would 404. Rewriting `/api/(.*)`
+to `/api` runs the function but hands Fastify the literal path `/api`, so *every* route
+404s — with the function running, which reads as a bug in the app rather than in the
+deployment. The catch-all reaches the function with the URL intact.
+
+**The `functions` key is `api/**/*.ts`, not the filename.** Those keys are globs, and
+`[...path]` reads as a character class — the config would silently not apply and the
+function would run on the default timeout rather than 60 seconds.
+
+**`/health` is rewritten to `/api/health`,** and Fastify serves both. A host that routes
+everything under `/api` to one function cannot reach a path outside that prefix.
+
+### Verifying the build before pushing
+
+```bash
+npm run build -w @midfunnel/console                     # what Vercel runs
+npx esbuild 'api/[...path].ts' --bundle --platform=node --target=node22 --format=esm --outfile=/dev/null
+```
+
+The second is the one worth running: it is how the platform bundles the function, and it
+is where a TypeScript workspace import that cannot be resolved shows up. `.vercelignore`
+excludes `scripts/`, so **nothing in the build may depend on it** — the first deploy failed
+because the build regenerated `okf-content.ts` from a script that is not shipped. That file
+is committed instead, and a test catches drift.
 
 ---
 

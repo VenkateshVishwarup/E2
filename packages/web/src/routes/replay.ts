@@ -24,7 +24,10 @@ function sample<T>(items: readonly T[], n: number): T[] {
 }
 
 export function registerRoutes(app: FastifyInstance, deps: ServerDeps): void {
+  // Both paths: hosts that route everything under /api to one function reach
+  // the second, and a plain deployment or a load balancer reaches the first.
   app.get("/health", async () => ({ ok: true }));
+  app.get("/api/health", async () => ({ ok: true }));
 
   app.get<{ Params: { journey: string } }>(
     "/api/journeys/:journey/versions",

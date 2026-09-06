@@ -1,25 +1,21 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "npm run build:console",
+  "buildCommand": "npm run build -w @midfunnel/console",
   "outputDirectory": "packages/console/dist",
   "installCommand": "npm install",
   "functions": {
-    "api/index.ts": {
+    "api/**/*.ts": {
       "maxDuration": 60,
       "memory": 1024
     }
   },
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api"
-    },
-    {
       "source": "/health",
-      "destination": "/api"
+      "destination": "/api/health"
     },
     {
-      "source": "/((?!api|health|assets).*)",
+      "source": "/((?!api|assets|favicon).*)",
       "destination": "/index.html"
     }
   ]
