@@ -321,3 +321,36 @@ describe("AgentRuntime.step — the scripted strategy is untouched", () => {
     expect(actions.map((a) => a.kind)).not.toContain("move");
   });
 });
+
+describe("AgentRuntime.step — a question that is not landing", () => {
+  const asked = (field: string) => ({
+    move: "ask", proposed: "ask", overridden: false, rule: null,
+    rationale: "", targetField: field, at: new Date(),
+  });
+
+  it("escalates under the guardrail's rule, not as the agent's own judgement", async () => {
+    const p = planner({ move: "ask", targetField: "timeline", message: "Timeline?" });
+    const actions = await runtimeFor(p, ev({
+      target_program: "online_mba", budget_band: "5L_to_15L",
+      decision_maker: "self", prior_qualification: "B.Tech",
+    })).step(openSpec, openState({
+      turns: [turn("agent", "hi"), turn("lead", "dunno")],
+      moves: [asked("timeline"), asked("timeline")],
+    }));
+    expect(actions).toContainEqual({ kind: "escalate", reason: "ask_repeated" });
+  });
+
+  it("moves on to another field instead of asking a third time", async () => {
+    const p = planner({ move: "ask", targetField: "timeline", message: "Timeline?" });
+    const a = asker("And roughly what budget are you working with?");
+    const actions = await new AgentRuntime(extractor(ev({ target_program: "online_mba" })),
+      a as never, p as never).step(openSpec, openState({
+        turns: [turn("agent", "hi"), turn("lead", "dunno")],
+        moves: [asked("timeline"), asked("timeline")],
+      }));
+    expect(findMove(actions)).toMatchObject({
+      overridden: true, rule: "ask_repeated", targetField: "budget_band",
+    });
+    expect(actions).toContainEqual({ kind: "send", text: "And roughly what budget are you working with?" });
+  });
+});

@@ -1173,7 +1173,7 @@ components:
           enum:
             [move_not_permitted, close_without_required_evidence, answer_without_knowledge,
              answer_quoted_a_figure, ask_unknown_field, ask_already_established,
-             ask_sensitive_too_early, offer_without_privilege, offer_without_binding,
+             ask_sensitive_too_early, ask_repeated, offer_without_privilege, offer_without_binding,
              deflections_exhausted, empty_message, null]
           description: |
             The guardrail rule that fired, from a closed set, or null when the proposal

@@ -77,6 +77,14 @@ const strategyBlock = z.object({
    */
   max_deflections: z.number().int().nonnegative().default(2),
   /**
+   * How many times the agent may ask for any one field. A lead who answers
+   * "dunno", or answers in words the extractor cannot place, would otherwise get
+   * the same question until the turn budget ran out — a loop that reads as an
+   * agent accepting only an exact phrase. Past the limit it moves on, or hands to
+   * a human if that field is all that is left.
+   */
+  max_asks_per_field: z.number().int().positive().default(2),
+  /**
    * How hard the planner deliberates before choosing a move.
    *
    * Reasoning effort rather than temperature: the models this runs on reject a

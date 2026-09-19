@@ -114,3 +114,35 @@ describe("offlineClient", () => {
     expect(res.output_text).toBe("Could you tell me your prior qualification?");
   });
 });
+
+describe("KeywordExtractor — answering a menu the way people do", () => {
+  const lead = async (text: string) => x.extract(spec, [t("agent", "Which intake?"), t("lead", text)]);
+
+  it("accepts the one word that tells the options apart", async () => {
+    // Requiring every word of `next_intake` meant "next" matched nothing, and the
+    // agent asked the same question until the turn budget ran out.
+    expect((await lead("next")).timeline?.value).toBe("next_intake");
+    expect((await lead("next mostly")).timeline?.value).toBe("next_intake");
+    expect((await lead("exploring really")).timeline?.value).toBe("just_exploring");
+    expect((await lead("the online one")).target_program?.value).toBe("online_mba");
+  });
+
+  it("reports a single-word match below a full one", async () => {
+    expect((await lead("next")).timeline?.confidence).toBeLessThan(
+      (await lead("next intake")).timeline!.confidence);
+  });
+
+  it("refuses to guess when the answer names two options", async () => {
+    expect((await lead("next or this one, not sure")).timeline).toBeUndefined();
+  });
+
+  it("does not read a common word as an answer", async () => {
+    // "under" names under_5L among the budget bands, and also "under pressure".
+    expect((await lead("I'm under a lot of pressure at work")).budget_band).toBeUndefined();
+    expect((await lead("this is confusing")).timeline).toBeUndefined();
+  });
+
+  it("finds nothing in an answer that is not one", async () => {
+    expect(await lead("dunno")).toEqual({});
+  });
+});

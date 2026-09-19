@@ -47,6 +47,39 @@ function normalise(text: string): string {
 
 interface Match extends ExtractedField { specificity: number }
 
+/**
+ * Words too common to identify an option on their own, even when only one
+ * option contains them. "this" names `this_intake` and also appears in half of
+ * all sentences; "under" names `under_5L` and also "under pressure".
+ */
+const NOT_DISTINCTIVE = new Set([
+  "this", "to", "time", "just", "needs", "under", "above", "the", "a", "and", "or",
+]);
+
+/**
+ * A word that belongs to exactly one of a field's options — "next" among
+ * this / next / just-exploring intakes.
+ *
+ * People answer a menu with the part that differs. Requiring every word of
+ * `next_intake` meant "next" and "next mostly" matched nothing, and the agent
+ * asked the same question until the turn budget ran out — which reads as an
+ * agent that only accepts an exact phrase, because that is what it was.
+ */
+function distinctiveWords(
+  values: readonly string[], { includeCommon = false } = {},
+): Map<string, string> {
+  const owners = new Map<string, Set<string>>();
+  for (const value of values) {
+    for (const w of normalise(value).trim().split(" ")) {
+      if (w.length < 2 || (!includeCommon && NOT_DISTINCTIVE.has(w))) continue;
+      (owners.get(w) ?? owners.set(w, new Set()).get(w)!).add(value);
+    }
+  }
+  const unique = new Map<string, string>();
+  for (const [w, vs] of owners) if (vs.size === 1) unique.set(w, [...vs][0]!);
+  return unique;
+}
+
 function bestMatch(haystack: string, values: readonly string[]): Match | null {
   let best: Match | null = null;
 
@@ -70,6 +103,25 @@ function bestMatch(haystack: string, values: readonly string[]): Match | null {
     };
     if (!best || candidate.specificity > best.specificity) best = candidate;
   }
+  if (best) return best;
 
-  return best;
+  // Nothing matched in full, so fall back to the one word that tells the options
+  // apart. Lower confidence than a full match, but above the default threshold:
+  // "next" is not ambiguous among these three, it is just short.
+  const hits = new Set<string>();
+  for (const [w, value] of distinctiveWords(values)) {
+    if (haystack.includes(` ${w} `)) hits.add(value);
+  }
+  if (hits.size !== 1) return null;
+
+  // Two options named at once ("next or this one, not sure") is a genuine
+  // ambiguity, and guessing between them would be worse than asking again. The
+  // common words count here even though they cannot identify an option alone:
+  // "this" is too weak to mean `this_intake`, but strong enough to doubt `next`.
+  const mentioned = new Set<string>();
+  for (const [w, value] of distinctiveWords(values, { includeCommon: true })) {
+    if (haystack.includes(` ${w} `)) mentioned.add(value);
+  }
+  if (mentioned.size > 1) return null;
+  return { value: [...hits][0]!, confidence: 0.8, specificity: 0 };
 }

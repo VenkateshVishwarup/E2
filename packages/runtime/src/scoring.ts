@@ -138,10 +138,13 @@ export function established(evidence: Evidence, field: string): boolean {
  * the scripted strategy would have chosen, or the two strategies stop being
  * comparable at exactly the moments that matter.
  *
- * Returns null when nothing is left to ask for.
+ * Returns null when nothing is left to ask for. `exclude` removes fields the
+ * agent has already asked for as often as it may.
  */
-export function nextField(spec: JourneySpec, evidence: Evidence): string | null {
-  const missing = missingFields(spec, evidence);
+export function nextField(
+  spec: JourneySpec, evidence: Evidence, exclude: ReadonlySet<string> = new Set(),
+): string | null {
+  const missing = missingFields(spec, evidence).filter((f) => !exclude.has(f));
   if (missing.length === 0) return null;
   const nothingEstablished = Object.keys(evidence).length === 0;
 

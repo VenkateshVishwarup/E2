@@ -454,6 +454,10 @@ function suggestFor(rule: string, wanted: string): string {
       return "The agent is asking for things it already has, which usually means the " +
              "extraction is landing at a confidence the contract rejects. Check " +
              "`confidence_min` on the fields it repeats.";
+    case "ask_repeated":
+      return "Leads are not answering one field in words the journey can place, so the " +
+             "agent keeps asking. Loosen that field's options or its `confidence_min`, make " +
+             "it optional if leads genuinely do not know, or give it a clearer description.";
     case "ask_sensitive_too_early":
       return "The agent opens with a `sensitive` field. If that is acceptable for this " +
              "vertical, drop the flag; otherwise leave it — the guardrail is doing its job.";

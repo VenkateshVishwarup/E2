@@ -4,7 +4,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSpec, type JourneySpec } from "@midfunnel/core/journey/spec";
 import type { MoveRecord } from "@midfunnel/core/events/types";
-import { admit, deflectionStreak, type GuardrailContext, type MoveProposal } from "../src/guardrails.js";
+import {
+  admit, deflectionStreak, exhaustedFields, type GuardrailContext, type MoveProposal,
+} from "../src/guardrails.js";
 import type { Evidence } from "../src/scoring.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -36,7 +38,7 @@ const ctx = (over: Partial<GuardrailContext> = {}): GuardrailContext => ({
 });
 
 const move = (m: string): MoveRecord =>
-  ({ move: m, proposed: m, overridden: false, rule: null, rationale: "", at: new Date() });
+  ({ move: m, proposed: m, overridden: false, rule: null, rationale: "", targetField: null, at: new Date() });
 
 describe("deflectionStreak", () => {
   it("counts consecutive non-collecting moves from the end", () => {
@@ -53,7 +55,7 @@ describe("deflectionStreak", () => {
     // punish the agent twice for one mistake.
     const blocked: MoveRecord = {
       move: "ask", proposed: "acknowledge", overridden: true,
-      rule: "deflections_exhausted", rationale: "", at: new Date(),
+      rule: "deflections_exhausted", rationale: "", targetField: null, at: new Date(),
     };
     expect(deflectionStreak([move("answer"), blocked])).toBe(0);
   });
@@ -307,5 +309,68 @@ describe("admit — nothing is admissible", () => {
     const stuck = variant((s) => { s.strategy.moves = ["answer"]; });
     const d = admit(stuck, propose({ move: "answer", knowledgeKey: null, message: "" }), ctx());
     expect(d.move).toBe("escalate");
+  });
+});
+
+describe("admit — a question that is not landing", () => {
+  const asked = (field: string): MoveRecord =>
+    ({ ...move("ask"), targetField: field });
+
+  it("refuses to ask for a field a third time", async () => {
+    const d = admit(open, propose({ targetField: "timeline", message: "Your timeline?" }),
+      ctx({ evidence: ev({ target_program: "online_mba" }),
+            moves: [asked("timeline"), asked("timeline")] }));
+    expect(d).toMatchObject({ overridden: true, rule: "ask_repeated", move: "ask" });
+    expect(d.targetField).toBe("budget_band");
+  });
+
+  it("allows the one re-ask the journey permits", () => {
+    const d = admit(open, propose({ targetField: "timeline", message: "Which intake — this, next?" }),
+      ctx({ evidence: ev({ target_program: "online_mba" }), moves: [asked("timeline")] }));
+    expect(d).toMatchObject({ overridden: false, move: "ask", targetField: "timeline" });
+  });
+
+  it("counts the whole conversation, so alternating fields cannot loop", () => {
+    // stuck, other, stuck — consecutive counting would see a streak of one.
+    const d = admit(open, propose({ targetField: "timeline", message: "Timeline?" }),
+      ctx({ evidence: ev({ target_program: "online_mba" }),
+            moves: [asked("timeline"), asked("budget_band"), asked("timeline")] }));
+    expect(d.rule).toBe("ask_repeated");
+  });
+
+  it("hands to a human when the stuck field is all that is left", () => {
+    const d = admit(open, propose({ targetField: "timeline", message: "Timeline?" }),
+      ctx({
+        evidence: ev({
+          target_program: "online_mba", budget_band: "5L_to_15L",
+          decision_maker: "self", prior_qualification: "B.Tech",
+        }),
+        moves: [asked("timeline"), asked("timeline")],
+      }));
+    expect(d).toMatchObject({ move: "escalate", rule: "ask_repeated" });
+  });
+
+  it("never closes with required evidence missing, even with nothing left to ask", () => {
+    // Closing would record an inconclusive lead as if it had run its course.
+    const d = admit(open, propose({ move: "close", message: "" }),
+      ctx({
+        evidence: ev({ target_program: "online_mba", budget_band: "5L_to_15L",
+                       decision_maker: "self", prior_qualification: "B.Tech" }),
+        moves: [asked("timeline"), asked("timeline")],
+      }));
+    expect(d.move).toBe("escalate");
+  });
+
+  it("forgets the limit once the field is established", () => {
+    expect(exhaustedFields(open, [asked("timeline"), asked("timeline")],
+      ev({ timeline: "next_intake" }))).toEqual(new Set());
+  });
+
+  it("honours the journey's own limit", () => {
+    const patient = variant((s) => { s.strategy.max_asks_per_field = 3; });
+    const d = admit(patient, propose({ targetField: "timeline", message: "Timeline?" }),
+      ctx({ evidence: ev({ target_program: "online_mba" }),
+            moves: [asked("timeline"), asked("timeline")] }));
+    expect(d.overridden).toBe(false);
   });
 });

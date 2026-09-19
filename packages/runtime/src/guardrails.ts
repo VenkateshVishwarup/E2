@@ -74,6 +74,30 @@ export function deflectionStreak(moves: readonly MoveRecord[]): number {
   return n;
 }
 
+/**
+ * Fields the agent has asked for as often as the journey allows, and still does
+ * not have.
+ *
+ * Counted over the whole conversation, not just the tail: counting only
+ * consecutive asks lets an agent alternate — stuck field, another field, stuck
+ * field again — and loop just as surely, one step removed.
+ */
+export function exhaustedFields(
+  spec: JourneySpec, moves: readonly MoveRecord[], evidence: Evidence,
+): Set<string> {
+  const asked = new Map<string, number>();
+  for (const m of moves) {
+    if (m.move === "ask" && m.targetField) {
+      asked.set(m.targetField, (asked.get(m.targetField) ?? 0) + 1);
+    }
+  }
+  const out = new Set<string>();
+  for (const [field, n] of asked) {
+    if (n >= spec.strategy.max_asks_per_field && !established(evidence, field)) out.add(field);
+  }
+  return out;
+}
+
 /** What the agent says when it decided to answer something it has no fact for. */
 const DEFAULT_DEFLECTION =
   "That's a good question and I don't want to guess at the answer — " +
@@ -161,6 +185,7 @@ export function admit(
       const field = proposal.targetField;
       if (!field || !(field in spec.evidence)) return deny("ask_unknown_field");
       if (established(ctx.evidence, field)) return deny("ask_already_established");
+      if (exhaustedFields(spec, ctx.moves, ctx.evidence).has(field)) return deny("ask_repeated");
       const nothingEstablished = Object.keys(ctx.evidence).length === 0;
       if (spec.evidence[field]!.sensitive && nothingEstablished) {
         return deny("ask_sensitive_too_early");
@@ -212,15 +237,21 @@ function fallback(
     if (exhausted) base.rule = "deflections_exhausted";
   }
 
-  const field = nextField(spec, ctx.evidence);
+  // Whatever the proposal was, the fallback never lands on a field the agent has
+  // already asked for too often — or the guardrail would recreate the loop it
+  // exists to break.
+  const field = nextField(spec, ctx.evidence, exhaustedFields(spec, ctx.moves, ctx.evidence));
   if (field !== null && moveAllowed(spec, "ask")) {
     return { ...base, move: "ask", message: null, targetField: field };
   }
-  // Nothing left to collect: the conversation is over whether the planner
-  // realised it or not.
-  if (moveAllowed(spec, "close")) {
+  // Nothing left the agent may ask for. That is a finished conversation only if
+  // what is required is actually established; otherwise it is a conversation the
+  // agent cannot finish, and closing it would record an inconclusive lead as if
+  // it had run its course.
+  const done = evidenceComplete(spec, ctx.evidence) || spec.strategy.allow_unscripted_close;
+  if (done && moveAllowed(spec, "close")) {
     return { ...base, move: "close", message: null, targetField: null };
   }
-  // Out of admissible moves. A human always is.
+  // A human can ask the question in a way that lands. A human always is admissible.
   return { ...base, move: "escalate", message: null, targetField: null };
 }

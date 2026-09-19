@@ -195,6 +195,7 @@ function foldEvents(leadId: string, events: readonly StoredEvent[]): LeadState {
             overridden: Boolean(p.overridden),
             rule: p.rule === null || p.rule === undefined ? null : String(p.rule),
             rationale: String(p.rationale ?? ""),
+            targetField: p.targetField == null ? null : String(p.targetField),
             at: e.occurredAt,
           });
           break;

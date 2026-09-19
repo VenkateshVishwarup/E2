@@ -67,6 +67,8 @@ export interface MoveRecord {
   rule: string | null;
   /** The planner's own one-line reason, in its words. */
   rationale: string;
+  /** For an `ask`, the field it asked for. What lets a repeated question be caught. */
+  targetField: string | null;
   at: Date;
 }
 

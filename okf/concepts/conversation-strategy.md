@@ -85,6 +85,24 @@ collecting anything. Without it an open agent and a chatty lead talk pleasantly
 forever, and every turn is billed. The streak is counted over **performed** moves,
 not proposed ones: a deflection the guardrail already blocked did not happen.
 
+## A question that is not landing
+
+`strategy.max_asks_per_field` (default 2) caps how often the agent may ask for any
+one field. A lead who answers "dunno", or answers in words the extractor cannot
+place, would otherwise get the same question until the turn budget ran out — which
+reads as an agent that only accepts an exact phrase.
+
+The count is over the whole conversation, not the tail, so alternating between a
+stuck field and another one cannot loop either. Past the limit the guardrail
+refuses the ask (`ask_repeated`) and the fallback moves to another missing field.
+If the stuck field is all that is left and it is required, the conversation goes to
+a human rather than closing: closing would record an inconclusive lead as if it had
+run its course. The second ask of a field is rephrased to lower the bar ("roughly,
+which is closest"), never repeated word for word.
+
+The offline extractor also accepts the one word that tells a field's options apart
+— "next" for `next_intake` — and refuses to guess when an answer names two options.
+
 ## Tools
 
 An admitted `offer` returns an `invoke` action for the **caller** to perform through

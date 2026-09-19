@@ -8,7 +8,7 @@ import { MOVE_INTENT, type Move } from "@midfunnel/core/journey/moves";
 import type { LeadState } from "@midfunnel/core/events/types";
 import { cacheKey, MAX_TOKENS, modelFor } from "./provider.js";
 import type { CostMeter } from "./meter.js";
-import type { MoveProposal } from "./guardrails.js";
+import { exhaustedFields, type MoveProposal } from "./guardrails.js";
 import { established, evidenceComplete, nextField, type Evidence } from "./scoring.js";
 
 /**
@@ -123,12 +123,17 @@ export class OfflinePlanner implements Planner {
       };
     }
 
-    const field = nextField(spec, evidence);
+    // Skip what has already been asked for as often as allowed. Proposing it
+    // anyway would only be overridden; the guardrail stays the backstop.
+    const field = nextField(spec, evidence, exhaustedFields(spec, state.moves, evidence));
     if (field !== null && !evidenceComplete(spec, evidence)) {
+      const again = state.moves.some((m) => m.move === "ask" && m.targetField === field);
       return {
         ...base, move: "ask",
-        rationale: `${field} is still missing and is needed to qualify`,
-        message: askOffline(spec, field),
+        rationale: again
+          ? `the last answer did not establish ${field}, so asking once more, differently`
+          : `${field} is still missing and is needed to qualify`,
+        message: again ? reaskOffline(spec, field) : askOffline(spec, field),
         targetField: field, knowledgeKey: null,
       };
     }
@@ -176,6 +181,24 @@ const STOP = new Set([
 
 function words(s: string): string[] {
   return s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w));
+}
+
+/**
+ * The second ask for a field. Repeating the first word for word is what made
+ * the agent read as stuck on an exact phrase; a re-ask should lower the bar
+ * ("roughly", "closest") rather than restate it.
+ */
+function reaskOffline(spec: JourneySpec, field: string): string {
+  const def = spec.evidence[field]!;
+  const m = /^enum\[(.+)\]$/.exec(def.type.trim());
+  const options = m ? m[1]!.split(",").map((v) => v.trim().replace(/_/g, " ")) : [];
+  if (options.length === 0) {
+    return `No problem — even a rough answer on your ${field.replace(/_/g, " ")} helps.`;
+  }
+  const list = options.length > 1
+    ? `${options.slice(0, -1).join(", ")} or ${options.at(-1)}`
+    : options[0];
+  return `No problem — just roughly, which is closest: ${list}?`;
 }
 
 /** The offline question writer, with the declared options named. */
@@ -229,6 +252,9 @@ function plannerPrompt(spec: JourneySpec): string {
     "do not restate it and do not put a figure in your framing.",
     "- One short message, under 35 words. No preamble, no sign-off, no emoji.",
     `- You may spend at most ${spec.strategy.max_deflections} turn(s) in a row not collecting anything.`,
+    `- Ask for any one field at most ${spec.strategy.max_asks_per_field} time(s). If the lead's ` +
+    "answer did not land, rephrase once with the options; after that move on, or escalate " +
+    "if nothing else is missing. Never repeat a question word for word.",
     ...(spec.strategy.allow_unscripted_close
       ? []
       : ["- Do not choose `close` while any required evidence is missing."]),
@@ -245,6 +271,9 @@ function situation(spec: JourneySpec, state: LeadState, evidence: Evidence): str
       Object.entries(evidence).map(([k, v]) => [k, v.value]),
     ),
     still_missing_required: required.filter((f) => !established(evidence, f)),
+    // Asked for as often as the journey allows without it landing. Do not ask
+    // again — move on, or hand to a human if nothing else is missing.
+    do_not_ask_again: [...exhaustedFields(spec, state.moves, evidence)],
     required_complete: evidenceComplete(spec, evidence),
     recent_moves: state.moves.slice(-4).map((m) =>
       m.overridden ? `${m.proposed} -> ${m.move} (${m.rule})` : m.move),

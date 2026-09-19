@@ -221,7 +221,10 @@ export class AgentRuntime {
       case "escalate":
         // A named reason rather than the rationale, so escalations stay
         // countable. The planner's own words are on the MoveChosen event.
-        return [{ kind: "escalate", reason: "agent_judgement" }];
+        //
+        // When the guardrail forced the handover, its rule is the reason; the
+        // agent did not judge anything.
+        return [{ kind: "escalate", reason: d.overridden && d.rule ? d.rule : "agent_judgement" }];
 
       case "close":
         return this.settle(spec, evidence, { requireComplete: false });

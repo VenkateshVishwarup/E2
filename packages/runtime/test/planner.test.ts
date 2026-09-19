@@ -134,7 +134,7 @@ describe("ModelPlanner", () => {
     await new ModelPlanner(client as never).plan(open, state({
       moves: [{
         move: "ask", proposed: "close", overridden: true,
-        rule: "close_without_required_evidence", rationale: "", at: new Date(),
+        rule: "close_without_required_evidence", rationale: "", targetField: null, at: new Date(),
       }],
     }), {});
     expect(client.responses.parse.mock.calls[0]![0].input)
@@ -145,5 +145,31 @@ describe("ModelPlanner", () => {
     const client = reply(null);
     await expect(new ModelPlanner(client as never).plan(open, state(), {}))
       .rejects.toThrow(/no structured output/i);
+  });
+});
+
+describe("OfflinePlanner — asking again", () => {
+  const planner = new OfflinePlanner();
+  const asked = (field: string) => ({
+    move: "ask", proposed: "ask", overridden: false, rule: null,
+    rationale: "", targetField: field, at: new Date(),
+  });
+
+  it("does not repeat a question word for word", async () => {
+    const first = await planner.plan(open, state({ turns: [turn("lead", "online")] }),
+      ev({ target_program: "online_mba" }));
+    const second = await planner.plan(open,
+      state({ turns: [turn("lead", "dunno")], moves: [asked("timeline")] }),
+      ev({ target_program: "online_mba" }));
+    expect(second.targetField).toBe("timeline");
+    expect(second.message).not.toBe(first.message);
+    expect(second.message).toMatch(/closest/);
+  });
+
+  it("moves on once a field has been asked for as often as allowed", async () => {
+    const p = await planner.plan(open,
+      state({ turns: [turn("lead", "no idea")], moves: [asked("timeline"), asked("timeline")] }),
+      ev({ target_program: "online_mba" }));
+    expect(p.targetField).toBe("budget_band");
   });
 });
