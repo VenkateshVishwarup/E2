@@ -78910,6 +78910,16 @@ var KeywordExtractor = class {
     const leadText = turns.filter((t) => t.role === "lead").map((t) => normalise(t.text));
     for (const [field, def] of Object.entries(spec.evidence)) {
       const t = parseTypeExpr(def.type);
+      if (t.kind === "string") {
+        const answer = replyTo(turns, field);
+        if (answer !== null) {
+          out[field] = {
+            value: def.maxLength ? answer.slice(0, def.maxLength) : answer,
+            confidence: 0.75
+          };
+        }
+        continue;
+      }
       if (t.kind !== "enum") continue;
       for (let i = leadText.length - 1; i >= 0; i--) {
         const hit = bestMatch(leadText[i], t.values);
@@ -78977,6 +78987,21 @@ function bestMatch(haystack, values) {
   }
   if (mentioned.size > 1) return null;
   return { value: [...hits][0], confidence: 0.8, specificity: 0 };
+}
+var NON_ANSWER = /^(?:dunno|don'?t know|do not know|no idea|not sure|unsure|n\/?a|none|nothing|skip|pass|maybe|idk)\b/i;
+function replyTo(turns, field) {
+  const words2 = normalise(field).trim().split(" ");
+  for (let i = turns.length - 1; i > 0; i--) {
+    const reply = turns[i];
+    const question = turns[i - 1];
+    if (reply.role !== "lead" || question.role !== "agent") continue;
+    const asked = normalise(question.text);
+    if (!words2.every((w) => asked.includes(` ${w} `))) continue;
+    const text2 = reply.text.trim();
+    if (text2 === "" || NON_ANSWER.test(text2)) return null;
+    return text2;
+  }
+  return null;
 }
 
 // packages/runtime/src/offline-client.ts

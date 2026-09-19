@@ -22,6 +22,16 @@ export class KeywordExtractor {
 
     for (const [field, def] of Object.entries(spec.evidence)) {
       const t = parseTypeExpr(def.type);
+      if (t.kind === "string") {
+        const answer = replyTo(turns, field);
+        if (answer !== null) {
+          out[field] = {
+            value: def.maxLength ? answer.slice(0, def.maxLength) : answer,
+            confidence: 0.75,
+          };
+        }
+        continue;
+      }
       if (t.kind !== "enum") continue;
 
       // Newest first, so a later statement supersedes an earlier one.
@@ -124,4 +134,32 @@ function bestMatch(haystack: string, values: readonly string[]): Match | null {
   }
   if (mentioned.size > 1) return null;
   return { value: [...hits][0]!, confidence: 0.8, specificity: 0 };
+}
+
+/** Replies that decline to answer, so they are never recorded as one. */
+const NON_ANSWER =
+  /^(?:dunno|don'?t know|do not know|no idea|not sure|unsure|n\/?a|none|nothing|skip|pass|maybe|idk)\b/i;
+
+/**
+ * A free-text field has no vocabulary to match, so the only honest reading
+ * without a model is positional: the lead's reply to a question that named the
+ * field is the answer to it. Anything looser would take "B.Tech" as someone's
+ * budget.
+ *
+ * Without this every string field was invisible offline, so an agent that asked
+ * for a prior qualification and got "B.Tech" asked again.
+ */
+function replyTo(turns: Turn[], field: string): string | null {
+  const words = normalise(field).trim().split(" ");
+  for (let i = turns.length - 1; i > 0; i--) {
+    const reply = turns[i]!;
+    const question = turns[i - 1]!;
+    if (reply.role !== "lead" || question.role !== "agent") continue;
+    const asked = normalise(question.text);
+    if (!words.every((w) => asked.includes(` ${w} `))) continue;
+    const text = reply.text.trim();
+    if (text === "" || NON_ANSWER.test(text)) return null;
+    return text;
+  }
+  return null;
 }

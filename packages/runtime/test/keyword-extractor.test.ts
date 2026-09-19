@@ -146,3 +146,32 @@ describe("KeywordExtractor — answering a menu the way people do", () => {
     expect(await lead("dunno")).toEqual({});
   });
 });
+
+describe("KeywordExtractor — free-text fields", () => {
+  it("takes the reply to a question that named the field", async () => {
+    const out = await x.extract(spec, [
+      t("agent", "Could you tell me your prior qualification?"), t("lead", "B.Tech, 4 years at Infosys"),
+    ]);
+    expect(out.prior_qualification?.value).toBe("B.Tech, 4 years at Infosys");
+  });
+
+  it("does not record a refusal as an answer", async () => {
+    const out = await x.extract(spec, [
+      t("agent", "Could you tell me your prior qualification?"), t("lead", "no idea"),
+    ]);
+    expect(out.prior_qualification).toBeUndefined();
+  });
+
+  it("does not take a reply to some other question", async () => {
+    // Anything looser would record "B.Tech" as someone's timeline.
+    const out = await x.extract(spec, [t("agent", "Which intake?"), t("lead", "B.Tech")]);
+    expect(out.prior_qualification).toBeUndefined();
+  });
+
+  it("respects the field's declared maxLength", async () => {
+    const out = await x.extract(spec, [
+      t("agent", "Could you tell me your prior qualification?"), t("lead", "x".repeat(500)),
+    ]);
+    expect(String(out.prior_qualification?.value).length).toBe(120);
+  });
+});
