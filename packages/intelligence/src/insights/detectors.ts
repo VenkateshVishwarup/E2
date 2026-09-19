@@ -342,6 +342,135 @@ export const versionRegression: Detector = (views) => {
   return { findings };
 };
 
+/**
+ * The agent and the journey disagree about the job.
+ *
+ * Only reachable for an open-strategy version. The planner proposes, the guardrail
+ * disposes, and both halves are on the record — so the rate at which a proposal is
+ * refused is measurable, and so is which rule does the refusing.
+ *
+ * This is the finding that makes non-determinism operable rather than merely
+ * interesting. A guardrail that never fires is decoration. One that fires on a
+ * third of turns is telling you something specific: either the agent is reaching
+ * for something the journey should permit, or the journey is briefed for a
+ * conversation the agent is not having. The rule name says which.
+ *
+ * Conversion is deliberately NOT the headline here. An override changes a single
+ * turn, and attributing an outcome to it would be a claim the data cannot carry.
+ * The rate and its cause are the finding; the conversion gap is reported beside it
+ * with an interval, for the reader to weigh.
+ */
+export const strategyFriction: Detector = (all) => {
+  const open = all.filter((v) => v.moves.length > 0);
+  if (open.length === 0) {
+    return { findings: [], skipped: "no open-strategy conversations in scope" };
+  }
+  if (open.length < MIN_SUPPORT) {
+    return {
+      findings: [],
+      skipped: `only ${open.length} open-strategy conversations (need ${MIN_SUPPORT})`,
+    };
+  }
+
+  const decisions = open.flatMap((v) => v.moves);
+  const overridden = decisions.filter((m) => m.overridden);
+  if (overridden.length === 0) {
+    // Worth saying rather than staying silent: "the guardrail never fired" is a
+    // result, and a reader who sees nothing cannot tell it from a broken detector.
+    return {
+      findings: [],
+      skipped:
+        `the guardrail admitted all ${decisions.length} decisions across ` +
+        `${open.length} conversations — nothing was refused`,
+    };
+  }
+
+  const byRule = new Map<string, typeof overridden>();
+  for (const m of overridden) bucket(byRule, m.rule ?? "(unnamed)", m);
+
+  // The rule doing most of the refusing, because a list of seven small rates is
+  // not something anyone acts on.
+  const [rule, hits] = [...byRule.entries()].sort((a, b) => b[1].length - a[1].length)[0]!;
+  const rate = overridden.length / decisions.length;
+  const share = hits.length / overridden.length;
+  const wanted = [...new Set(hits.map((m) => m.proposed))].join(", ");
+
+  // Conversations where the agent was refused at least once, against the rest.
+  const refusedIn = open.filter((v) => v.moves.some((m) => m.overridden));
+  const clean = open.filter((v) => !v.moves.some((m) => m.overridden));
+  const comparable = supported(refusedIn, clean);
+  const { ci, diff } = comparable ? split(clean, refusedIn) : { ci: undefined, diff: 0 };
+
+  return {
+    findings: [{
+      code: "strategy_friction",
+      severity: rate > 0.3 ? "high" : rate > 0.15 ? "medium" : "low",
+      claim:
+        `The agent's chosen move was refused on ${pct(rate)} of turns, and ` +
+        `${pct(share)} of those were "${rule}".`,
+      detail:
+        `${overridden.length} of ${decisions.length} decisions across ${open.length} ` +
+        `conversations were overridden. Under "${rule}" the agent was reaching for: ` +
+        `${wanted}.` +
+        (comparable && ci
+          ? ` Conversations where it was refused at least once convert ` +
+            `${pct(Math.abs(diff))} ${diff > 0 ? "better" : "worse"} than ones where it was ` +
+            `not (95% CI ${pct(ci[0])} .. ${pct(ci[1])}) — an override changes one turn, so ` +
+            `read that as context rather than cause.`
+          : ` Too few conversations in one of the two groups to compare conversion.`),
+      n: open.length,
+      effect: rate,
+      ...(comparable && ci ? { ci95: ci } : {}),
+      suggestion: suggestFor(rule, wanted),
+      evidence: {
+        decisions: decisions.length,
+        overridden: overridden.length,
+        byRule: Object.fromEntries([...byRule].map(([r, ms]) => [r, ms.length])),
+      },
+    }],
+  };
+};
+
+/**
+ * What to change, per rule. Two directions are always available — permit the
+ * thing, or brief the agent so it stops asking — and which one is right depends on
+ * the rule, so this says which rather than offering both every time.
+ */
+function suggestFor(rule: string, wanted: string): string {
+  switch (rule) {
+    case "answer_without_knowledge":
+      return "Leads are asking things no `knowledge:` entry covers, and the agent is " +
+             "deflecting instead of answering. Read the transcripts, and declare the facts " +
+             "you are happy for it to give word for word.";
+    case "close_without_required_evidence":
+      return "The agent keeps trying to end conversations early. Either a required field " +
+             "is one leads will not give, or the contract is longer than the conversation " +
+             "supports — consider making the weakest field optional.";
+    case "deflections_exhausted":
+      return "The agent is spending its whole budget being agreeable. Raise " +
+             "`strategy.max_deflections` if the conversations read well, or declare the " +
+             "facts it keeps needing so a deflection becomes an answer.";
+    case "ask_already_established":
+      return "The agent is asking for things it already has, which usually means the " +
+             "extraction is landing at a confidence the contract rejects. Check " +
+             "`confidence_min` on the fields it repeats.";
+    case "ask_sensitive_too_early":
+      return "The agent opens with a `sensitive` field. If that is acceptable for this " +
+             "vertical, drop the flag; otherwise leave it — the guardrail is doing its job.";
+    case "offer_without_privilege":
+    case "offer_without_binding":
+      return `The agent wants to use a tool it cannot reach (${wanted}). Grant the ` +
+             "privilege under `agent.privileges` and declare the binding under `tools:`, " +
+             "or remove `offer` from the permitted moves.";
+    case "answer_quoted_a_figure":
+      return "The agent keeps putting figures in its own framing. That is `quote_exact_fees` " +
+             "working as intended — the declared fact still reaches the lead.";
+    default:
+      return `Review why "${rule}" fires so often: either permit what the agent is ` +
+             `reaching for (${wanted}), or change the journey so it stops reaching for it.`;
+  }
+}
+
 export const DETECTORS: Record<FindingCode, Detector> = {
   evidence_bottleneck: evidenceBottleneck,
   segment_divergence: segmentDivergence,
@@ -350,6 +479,7 @@ export const DETECTORS: Record<FindingCode, Detector> = {
   timing,
   policy_friction: policyFriction,
   version_regression: versionRegression,
+  strategy_friction: strategyFriction,
 };
 
 function hourIn(at: Date, tz: string): number {

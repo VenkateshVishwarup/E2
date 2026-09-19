@@ -47,6 +47,20 @@ export const ROADMAP: RoadmapItem[] = [
     horizon: "next",
   },
   {
+    id: "variance",
+    title: "Variance bands for a non-deterministic agent",
+    will: "Run a non-deterministic version over the same cohort several times and report a " +
+          "band rather than a number. A single figure for an agent that may diverge is a " +
+          "point estimate of a distribution, and the honest comparison against a " +
+          "deterministic version is band against point.",
+    today: "Both strategies exist and are selectable per version, every planner decision " +
+           "is a MoveChosen event, and Simulate already compares two versions over " +
+           "generated conversations. Each run reports one number, and Replay says outright " +
+           "that it cannot see a strategy change — it runs over transcripts the other " +
+           "strategy produced.",
+    horizon: "next",
+  },
+  {
     id: "alerts",
     title: "Alerts that reach someone",
     will: "Route a fired threshold to email, Slack or a pager, with an owner and an " +

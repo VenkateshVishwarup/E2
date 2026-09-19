@@ -1208,8 +1208,8 @@ var require_utils2 = __commonJS({
         return nodeCrypto.createHash("md5").update(string3, "utf-8").digest("hex");
       } catch (e) {
         const data = typeof string3 === "string" ? textEncoder.encode(string3) : string3;
-        const hash = await subtleCrypto.digest("MD5", data);
-        return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
+        const hash2 = await subtleCrypto.digest("MD5", data);
+        return Array.from(new Uint8Array(hash2)).map((b) => b.toString(16).padStart(2, "0")).join("");
       }
     }
     async function postgresMd5PasswordHash(user, password, salt) {
@@ -27564,10 +27564,10 @@ var require_util = __commonJS({
     var codegen_1 = require_codegen();
     var code_1 = require_code();
     function toHash(arr) {
-      const hash = {};
+      const hash2 = {};
       for (const item of arr)
-        hash[item] = true;
-      return hash;
+        hash2[item] = true;
+      return hash2;
     }
     exports.toHash = toHash;
     function alwaysValidSchema(it, schema) {
@@ -53415,7 +53415,11 @@ var EVENT_TYPES = [
   "HandoffCreated",
   "NurtureScheduled",
   "OutcomeObserved",
-  "CostObserved"
+  "CostObserved",
+  // An open-strategy agent's choice of what to do next, and whether the
+  // guardrail let it. Recorded for the same reason `AuthorizationDenied` is: a
+  // decision nobody can read afterwards is not a decision anyone will trust.
+  "MoveChosen"
 ];
 var eventInputSchema = external_exports.object({
   leadId: external_exports.string().min(1),
@@ -53560,7 +53564,8 @@ function foldEvents(leadId, events) {
       journeyVersion: events[0]?.journeyVersion ?? 0,
       evidence: {},
       turns: [],
-      outcomes: []
+      outcomes: [],
+      moves: []
     };
     for (const e of events) {
       const p = e.payload;
@@ -53582,6 +53587,16 @@ function foldEvents(leadId, events) {
           break;
         case "OutcomeObserved":
           state2.outcomes.push(e.payload);
+          break;
+        case "MoveChosen":
+          state2.moves.push({
+            move: String(p.move ?? ""),
+            proposed: String(p.proposed ?? p.move ?? ""),
+            overridden: Boolean(p.overridden),
+            rule: p.rule === null || p.rule === void 0 ? null : String(p.rule),
+            rationale: String(p.rationale ?? ""),
+            at: e.occurredAt
+          });
           break;
         default:
           break;
@@ -53762,6 +53777,17 @@ function evaluateAll(metrics, events) {
   return out;
 }
 
+// packages/core/src/journey/moves.ts
+var MOVES = ["ask", "answer", "acknowledge", "offer", "close", "escalate"];
+var MOVE_INTENT = {
+  ask: "Ask for one piece of evidence that is still missing.",
+  answer: "Answer a question the lead asked, using ONLY a declared knowledge entry.",
+  acknowledge: "Respond to what the lead said without asking for anything \u2014 reassurance, an objection handled, a tangent closed off \u2014 then hand the turn back.",
+  offer: "Use a tool on the lead's behalf: look something up, book, or write to the CRM.",
+  close: "Stop collecting and finish the conversation: score, route, done.",
+  escalate: "Hand to a human now."
+};
+
 // packages/core/src/journey/spec.ts
 function parseTypeExpr(expr) {
   const t = expr.trim();
@@ -53795,6 +53821,34 @@ var routeRule = external_exports.object({
   target: external_exports.string(),
   sla: external_exports.string().optional()
 });
+var strategyBlock = external_exports.object({
+  kind: external_exports.enum(["scripted", "open"]).default("scripted"),
+  /** The subset of the repertoire this journey allows. */
+  moves: external_exports.array(external_exports.enum(MOVES)).min(1).default([...MOVES]),
+  /**
+   * Whether the agent may end a conversation before required evidence is
+   * complete. Off by default: a model that finds a conversation awkward will
+   * reach for the exit, and an early close looks identical in the log to a lead
+   * who answered everything.
+   */
+  allow_unscripted_close: external_exports.boolean().default(false),
+  /**
+   * How many turns in a row the agent may spend not collecting anything.
+   * Without a cap an open agent and a chatty lead will talk pleasantly forever,
+   * and every one of those turns is billed.
+   */
+  max_deflections: external_exports.number().int().nonnegative().default(2),
+  /**
+   * How hard the planner deliberates before choosing a move.
+   *
+   * Reasoning effort rather than temperature: the models this runs on reject a
+   * temperature parameter outright, and effort is the knob that actually trades
+   * cost against judgement. `low` is roughly the price of the question-writing
+   * call it replaces; `high` is where a planner starts noticing that a lead has
+   * answered a different question than the one it asked.
+   */
+  reasoning_effort: external_exports.enum(["low", "medium", "high"]).default("medium")
+}).default({});
 var rawSpec = external_exports.object({
   journey: external_exports.string().min(1),
   version: external_exports.number().int().positive(),
@@ -53814,6 +53868,17 @@ var rawSpec = external_exports.object({
   // placeholders it contains. Branding belongs to the spec author; a lead's
   // own details are supplied per conversation.
   pinned: external_exports.record(external_exports.union([external_exports.string(), external_exports.record(external_exports.string())])).default({}),
+  strategy: strategyBlock,
+  /**
+   * The only facts the agent is allowed to state. Keyed by topic; the value is
+   * sent as written.
+   *
+   * This is what makes an open agent shippable. The move it chooses is the
+   * model's; the words of a factual answer are the tenant's. An open agent with
+   * an empty knowledge block can hold a conversation and cannot assert anything,
+   * which is the correct default for a journey nobody has briefed yet.
+   */
+  knowledge: external_exports.record(external_exports.string()).default({}),
   scoring: external_exports.object({ weights: external_exports.record(external_exports.number()) }),
   routing: external_exports.record(routeRule),
   tools: external_exports.array(external_exports.object({ capability: external_exports.string().min(1), binding: external_exports.string().min(1) })),
@@ -53867,6 +53932,22 @@ function renderPinned(template, values) {
 function requiredEvidenceFields(spec) {
   return Object.entries(spec.evidence).filter(([, d]) => d.required).map(([f]) => f);
 }
+function isOpen(spec) {
+  return spec.strategy.kind === "open";
+}
+function allowedMoves(spec) {
+  return [...spec.strategy.moves];
+}
+function moveAllowed(spec, move) {
+  return spec.strategy.moves.includes(move);
+}
+function knowledgeEntry(spec, key) {
+  return spec.knowledge[key];
+}
+function knowledgeKeys(spec) {
+  return Object.keys(spec.knowledge);
+}
+var FIGURE = /(?:[$£€₹]\s?\d|(?:USD|INR|EUR|GBP|Rs\.?)\s?\d|\d[\d,.]*\s?(?:%|k\b|L\b|lakhs?|crores?|cr\b|USD|INR|EUR|GBP))/i;
 function lintSpec(spec) {
   const warnings = [];
   const fields = Object.keys(spec.evidence);
@@ -53896,6 +53977,47 @@ function lintSpec(spec) {
   }
   warnings.push(...lintMetrics(spec));
   warnings.push(...lintPinned(spec));
+  warnings.push(...lintStrategy(spec));
+  return warnings;
+}
+function lintStrategy(spec) {
+  const warnings = [];
+  const moves = new Set(spec.strategy.moves);
+  const knowledge = knowledgeKeys(spec);
+  if (isOpen(spec)) {
+    if (moves.has("answer") && knowledge.length === 0) {
+      warnings.push({
+        code: "unanswerable_open_journey",
+        message: 'strategy allows the "answer" move but `knowledge` is empty. The agent may only state declared facts, so every question it decides to answer will be overridden into a deflection. Declare the facts it should be able to give, or drop the move.'
+      });
+    }
+    if (moves.has("offer") && spec.tools.length === 0) {
+      warnings.push({
+        code: "unusable_move",
+        message: 'strategy allows the "offer" move but the journey declares no tools. There is nothing for the agent to offer to do.'
+      });
+    }
+    if (moves.size === 1 && moves.has("ask")) {
+      warnings.push({
+        code: "unusable_move",
+        message: 'strategy is "open" but "ask" is the only permitted move, which is what "scripted" already does \u2014 at the cost of an extra model call per turn to arrive at the same decision.'
+      });
+    }
+  } else if (knowledge.length > 0) {
+    warnings.push({
+      code: "inert_knowledge",
+      message: `knowledge declares ${knowledge.length} fact(s) (${knowledge.join(", ")}) but the strategy is "scripted", which never answers a question. The block has no effect until the strategy is open.`
+    });
+  }
+  if (spec.policy.never.includes("quote_exact_fees")) {
+    const quoting = Object.entries(spec.knowledge).filter(([, text2]) => FIGURE.test(text2)).map(([key]) => key);
+    if (quoting.length > 0) {
+      warnings.push({
+        code: "knowledge_contradicts_policy",
+        message: `policy forbids quote_exact_fees, but knowledge.${quoting.join(", knowledge.")} contains a figure. Declared knowledge is sent as written and wins; the policy rule still stops the agent putting a figure in its own framing.`
+      });
+    }
+  }
   return warnings;
 }
 function lintMetrics(spec) {
@@ -64785,9 +64907,9 @@ _a = X509WorkloadIdentityAuth, _X509WorkloadIdentityAuth_identityProviderId = /*
   if (attempt.controller.signal.aborted && attempt.generation !== __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_tokenGeneration, "f")) {
     return await this.getToken(options, context);
   }
-  const fallback = __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_instances, "m", _X509WorkloadIdentityAuth_fallbackToken).call(this, error2, cached3, scope);
-  if (fallback !== void 0) {
-    return fallback;
+  const fallback2 = __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_instances, "m", _X509WorkloadIdentityAuth_fallbackToken).call(this, error2, cached3, scope);
+  if (fallback2 !== void 0) {
+    return fallback2;
   }
   if (error2 && typeof error2 === "object" && !(error2 instanceof OAuthError)) {
     const oauth = findX509OAuthError2(error2);
@@ -78166,6 +78288,321 @@ function qualifies(spec, s, evidence) {
     evidenceComplete: evidenceComplete(spec, evidence)
   });
 }
+function missingFields(spec, evidence) {
+  return Object.keys(spec.evidence).filter((f) => !established(evidence, f));
+}
+function established(evidence, field) {
+  const got = evidence[field];
+  return got !== void 0 && got.value !== null && got.value !== void 0;
+}
+function nextField(spec, evidence) {
+  const missing = missingFields(spec, evidence);
+  if (missing.length === 0) return null;
+  const nothingEstablished = Object.keys(evidence).length === 0;
+  const eligible = missing.filter((f) => !(spec.evidence[f].sensitive && nothingEstablished));
+  const pool = eligible.length > 0 ? eligible : missing;
+  return pool.find((f) => spec.evidence[f].required) ?? pool[0];
+}
+
+// packages/runtime/src/guardrails.ts
+function deflectionStreak(moves) {
+  let n = 0;
+  for (let i = moves.length - 1; i >= 0; i--) {
+    const m = moves[i].move;
+    if (m === "acknowledge" || m === "answer") n++;
+    else break;
+  }
+  return n;
+}
+var DEFAULT_DEFLECTION = "That's a good question and I don't want to guess at the answer \u2014 I'll make sure someone covers it properly.";
+function admit(spec, proposal, ctx) {
+  const deny = (rule) => fallback(spec, proposal, ctx, rule);
+  const keep = (over = {}) => ({
+    move: proposal.move,
+    message: proposal.message.trim(),
+    rationale: proposal.rationale,
+    proposed: proposal.move,
+    overridden: false,
+    rule: null,
+    targetField: proposal.targetField,
+    knowledgeKey: proposal.knowledgeKey,
+    capability: proposal.capability,
+    ...over
+  });
+  if (!moveAllowed(spec, proposal.move)) return deny("move_not_permitted");
+  const move = proposal.move;
+  const text2 = proposal.message.trim();
+  switch (move) {
+    case "escalate":
+      return keep({ message: text2 || null });
+    case "close": {
+      if (!evidenceComplete(spec, ctx.evidence) && !spec.strategy.allow_unscripted_close) {
+        return deny("close_without_required_evidence");
+      }
+      return keep({ message: null });
+    }
+    case "answer": {
+      const fact = proposal.knowledgeKey ? knowledgeEntry(spec, proposal.knowledgeKey) : void 0;
+      if (!fact) return deny("answer_without_knowledge");
+      if (spec.policy.never.includes("quote_exact_fees") && FIGURE.test(text2)) {
+        return keep({ message: fact, overridden: true, rule: "answer_quoted_a_figure" });
+      }
+      return keep({ message: text2 ? `${text2} ${fact}` : fact });
+    }
+    case "acknowledge": {
+      if (deflectionStreak(ctx.moves) >= spec.strategy.max_deflections) {
+        return deny("deflections_exhausted");
+      }
+      if (!text2) return deny("empty_message");
+      return keep();
+    }
+    case "offer": {
+      const declared = spec.tools.some((t) => t.capability === proposal.capability);
+      if (!proposal.capability || !declared) return deny("offer_without_binding");
+      const granted = spec.agent.privileges.some((p) => p.split(":")[0] === proposal.capability);
+      if (!granted) return deny("offer_without_privilege");
+      if (!ctx.toolsAvailable) return deny("offer_without_binding");
+      if (!text2) return deny("empty_message");
+      return keep();
+    }
+    case "ask": {
+      const field = proposal.targetField;
+      if (!field || !(field in spec.evidence)) return deny("ask_unknown_field");
+      if (established(ctx.evidence, field)) return deny("ask_already_established");
+      const nothingEstablished = Object.keys(ctx.evidence).length === 0;
+      if (spec.evidence[field].sensitive && nothingEstablished) {
+        return deny("ask_sensitive_too_early");
+      }
+      if (!text2) return deny("empty_message");
+      return keep();
+    }
+  }
+}
+function fallback(spec, proposal, ctx, rule) {
+  const base = {
+    rationale: proposal.rationale,
+    proposed: proposal.move,
+    overridden: true,
+    rule,
+    knowledgeKey: null,
+    capability: null
+  };
+  const exhausted = deflectionStreak(ctx.moves) >= spec.strategy.max_deflections;
+  if (rule === "answer_without_knowledge") {
+    if (moveAllowed(spec, "acknowledge") && !exhausted) {
+      return {
+        ...base,
+        move: "acknowledge",
+        targetField: null,
+        message: pinnedText(spec, "deflection") ?? DEFAULT_DEFLECTION
+      };
+    }
+    if (exhausted) base.rule = "deflections_exhausted";
+  }
+  const field = nextField(spec, ctx.evidence);
+  if (field !== null && moveAllowed(spec, "ask")) {
+    return { ...base, move: "ask", message: null, targetField: field };
+  }
+  if (moveAllowed(spec, "close")) {
+    return { ...base, move: "close", message: null, targetField: null };
+  }
+  return { ...base, move: "escalate", message: null, targetField: null };
+}
+
+// packages/runtime/src/planner.ts
+function proposalSchema(spec) {
+  const fields = Object.keys(spec.evidence);
+  const knowledge = knowledgeKeys(spec);
+  const capabilities = spec.tools.map((t) => t.capability);
+  const oneOf = (values) => values.length > 0 ? _enum(values).nullable() : string2().nullable();
+  return object({
+    move: _enum(allowedMoves(spec)),
+    rationale: string2().describe("One short sentence: why this move, now."),
+    message: string2().describe(
+      "What to say. Empty for close. For answer, the FRAMING ONLY \u2014 one short sentence that is not itself the fact; the fact is appended for you."
+    ),
+    target_field: oneOf(fields).describe("Only for ask. Null otherwise."),
+    knowledge_key: oneOf(knowledge).describe("Only for answer. Null otherwise."),
+    capability: oneOf(capabilities).describe("Only for offer. Null otherwise."),
+    confidence: number2().min(0).max(1)
+  });
+}
+var ModelPlanner = class {
+  constructor(client, meter) {
+    this.client = client;
+    this.meter = meter;
+  }
+  async plan(spec, state2, evidence) {
+    const model = modelFor("runtime");
+    const response = await this.client.responses.parse({
+      model,
+      max_output_tokens: MAX_TOKENS,
+      reasoning: { effort: spec.strategy.reasoning_effort },
+      // Stable prefix first, volatile last, byte-identical across every
+      // conversation in a journey version — the discipline that makes the
+      // platform's automatic prefix caching hit at all.
+      instructions: plannerPrompt(spec),
+      prompt_cache_key: cacheKey(spec.journey, spec.version),
+      text: { format: zodTextFormat(proposalSchema(spec), "move") },
+      input: situation(spec, state2, evidence)
+    });
+    this.meter?.record(model, response.usage);
+    const parsed = response.output_parsed;
+    if (!parsed) throw new Error("planner received no structured output from the model");
+    return {
+      move: parsed.move,
+      rationale: parsed.rationale,
+      message: parsed.message,
+      targetField: parsed.target_field,
+      knowledgeKey: parsed.knowledge_key,
+      capability: parsed.capability,
+      confidence: parsed.confidence
+    };
+  }
+};
+var OfflinePlanner = class {
+  async plan(spec, state2, evidence) {
+    const lastLead = [...state2.turns].reverse().find((t) => t.role === "lead");
+    const text2 = lastLead?.text ?? "";
+    const base = { capability: null, confidence: 0.6 };
+    if (/\?/.test(text2)) {
+      const key = bestKnowledgeMatch(spec, text2);
+      return {
+        ...base,
+        move: "answer",
+        rationale: key ? `the lead asked something the "${key}" entry covers` : "the lead asked a question no declared knowledge entry covers",
+        message: key ? "Happy to explain." : "",
+        targetField: null,
+        knowledgeKey: key
+      };
+    }
+    const field = nextField(spec, evidence);
+    if (field !== null && !evidenceComplete(spec, evidence)) {
+      return {
+        ...base,
+        move: "ask",
+        rationale: `${field} is still missing and is needed to qualify`,
+        message: askOffline(spec, field),
+        targetField: field,
+        knowledgeKey: null
+      };
+    }
+    return {
+      ...base,
+      move: "close",
+      rationale: "everything required has been established",
+      message: "",
+      targetField: null,
+      knowledgeKey: null
+    };
+  }
+};
+function bestKnowledgeMatch(spec, question) {
+  const asked = new Set(words(question));
+  let best = null;
+  for (const [key, fact] of Object.entries(spec.knowledge)) {
+    const keyTerms = new Set(words(key));
+    const factTerms = new Set(words(fact));
+    let weight = 0;
+    for (const w of asked) {
+      if (keyTerms.has(w)) weight += 2;
+      else if (factTerms.has(w)) weight += 1;
+    }
+    if (weight > 0 && (best === null || weight > best.weight)) best = { key, weight };
+  }
+  return best && best.weight >= 2 ? best.key : null;
+}
+var STOP = /* @__PURE__ */ new Set([
+  "the",
+  "a",
+  "an",
+  "is",
+  "are",
+  "do",
+  "does",
+  "did",
+  "what",
+  "how",
+  "much",
+  "can",
+  "i",
+  "you",
+  "we",
+  "my",
+  "me",
+  "to",
+  "for",
+  "of",
+  "and",
+  "or",
+  "in",
+  "on",
+  "it",
+  "that",
+  "this",
+  "there",
+  "any",
+  "be",
+  "will",
+  "would",
+  "about"
+]);
+function words(s) {
+  return s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w));
+}
+function askOffline(spec, field) {
+  const def = spec.evidence[field];
+  const m = /^enum\[(.+)\]$/.exec(def.type.trim());
+  const options = m ? m[1].split(",").map((v) => v.trim().replace(/_/g, " ")) : [];
+  const q = def.description ? `${def.description}?` : `Could you tell me your ${field.replace(/_/g, " ")}?`;
+  return options.length > 0 ? `${q} (${options.join(", ")})` : q;
+}
+function plannerPrompt(spec) {
+  const moves = allowedMoves(spec);
+  const knowledge = Object.entries(spec.knowledge);
+  return [
+    `You are ${spec.agent.persona}, talking to a ${spec.vertical} lead over chat.`,
+    `Goal: ${spec.objective.goal}.`,
+    "",
+    "Each turn you choose ONE move. You are not filling in a form: the lead may say anything, in any order, and may ask you things. Deal with what they actually said before returning to what you need.",
+    "",
+    "MOVES",
+    ...moves.map((m) => `- ${m}: ${MOVE_INTENT[m]}`),
+    "",
+    "EVIDENCE you are trying to establish",
+    ...Object.entries(spec.evidence).map(([f, d]) => `- ${f} (${d.type})${d.required ? " [required]" : ""}${d.sensitive ? " [sensitive \u2014 never the first thing you ask]" : ""}${d.description ? `: ${d.description}` : ""}`),
+    "",
+    "FACTS you may state \u2014 and nothing else",
+    ...knowledge.length > 0 ? knowledge.map(([k, v]) => `- ${k}: ${v}`) : ["- (none declared; you cannot assert any fact)"],
+    "",
+    ...spec.tools.length > 0 ? [
+      "TOOLS you may offer to use",
+      ...spec.tools.map((t) => `- ${t.capability}`),
+      ""
+    ] : [],
+    "RULES",
+    ...spec.policy.never.map((r) => `- never ${r}`),
+    "- Choose `answer` only when a FACT above covers the question. If none does, choose `acknowledge` and say you will get them a proper answer. Never improvise a fact.",
+    "- For `answer`, `message` is your framing only. The fact is appended verbatim; do not restate it and do not put a figure in your framing.",
+    "- One short message, under 35 words. No preamble, no sign-off, no emoji.",
+    `- You may spend at most ${spec.strategy.max_deflections} turn(s) in a row not collecting anything.`,
+    ...spec.strategy.allow_unscripted_close ? [] : ["- Do not choose `close` while any required evidence is missing."]
+  ].join("\n");
+}
+function situation(spec, state2, evidence) {
+  const required2 = requiredEvidenceFields(spec);
+  return JSON.stringify({
+    transcript: state2.turns.map((t) => `${t.role === "agent" ? "AGENT" : "LEAD"}: ${t.text}`).join("\n"),
+    established: Object.fromEntries(
+      Object.entries(evidence).map(([k, v]) => [k, v.value])
+    ),
+    still_missing_required: required2.filter((f) => !established(evidence, f)),
+    required_complete: evidenceComplete(spec, evidence),
+    recent_moves: state2.moves.slice(-4).map((m) => m.overridden ? `${m.proposed} -> ${m.move} (${m.rule})` : m.move),
+    turns_used: state2.turns.length,
+    turn_budget: spec.policy.max_turns
+  }, null, 2);
+}
 
 // packages/runtime/src/sentiment.ts
 var NEGATIVE = [
@@ -78210,10 +78647,10 @@ var LexiconSentiment = class {
     let weightSum = 0;
     lead.forEach((turn, i) => {
       const weight = (i + 1) / lead.length;
-      const words = turn.text.toLowerCase().split(/[^a-z']+/).filter(Boolean);
+      const words2 = turn.text.toLowerCase().split(/[^a-z']+/).filter(Boolean);
       let hits = 0;
       let sum2 = 0;
-      for (const w of words) {
+      for (const w of words2) {
         if (NEGATIVE.includes(w)) {
           sum2 -= 1;
           hits++;
@@ -78239,12 +78676,14 @@ var HUMAN_REQUEST = /\b(human|agent|person|representative|talk to someone|real p
 var AgentRuntime = class {
   extractor;
   client;
+  planner;
   sentiment = new LexiconSentiment();
   /** Token spend for the conversation currently being stepped. */
   meter = new CostMeter();
-  constructor(extractor, client) {
+  constructor(extractor, client, planner) {
     this.client = client ?? createClient();
     this.extractor = extractor ?? new EvidenceExtractor(this.client, this.meter);
+    this.planner = planner ?? new ModelPlanner(this.client, this.meter);
   }
   /** Extraction on its own, for callers that need it once and reuse it. */
   async extract(spec, turns) {
@@ -78282,24 +78721,96 @@ var AgentRuntime = class {
     }
     const leadTurns = state2.turns.filter((t) => t.role === "lead").length;
     if (state2.turns.length >= spec.policy.max_turns || leadTurns >= spec.policy.max_turns) {
-      actions.push({ kind: "complete", qualified: false });
-      return actions;
+      return [...actions, ...this.settle(spec, evidence, { requireComplete: true })];
+    }
+    if (isOpen(spec)) {
+      if (!allowFollowUp) {
+        return [...actions, ...this.settle(spec, evidence, { requireComplete: true })];
+      }
+      return [...actions, ...await this.stepOpen(spec, state2, evidence, opts)];
     }
     if (evidenceComplete(spec, evidence)) {
-      const s = score(spec, evidence);
-      const r = route(spec, s, evidence);
-      actions.push({ kind: "score", score: s });
-      actions.push({ kind: "route", ...r });
-      actions.push({ kind: "complete", qualified: qualifies(spec, s, evidence) });
-      return actions;
+      return [...actions, ...this.settle(spec, evidence, { requireComplete: false })];
     }
     if (!allowFollowUp) {
       actions.push({ kind: "complete", qualified: false });
       return actions;
     }
     const target = nextField(spec, evidence);
+    if (target === null) return [...actions, ...this.settle(spec, evidence, { requireComplete: false })];
     actions.push({ kind: "send", text: await this.ask(spec, state2, evidence, target) });
     return actions;
+  }
+  /**
+   * One planner decision, admitted or overridden, then carried out.
+   *
+   * The two halves are deliberately separate calls: `plan` is the model's and may
+   * return anything, `admit` is code and decides what actually happens. Nothing
+   * between them can be skipped, because this is the only path into an action.
+   */
+  async stepOpen(spec, state2, evidence, opts) {
+    const proposal = await this.planner.plan(spec, state2, evidence);
+    const decision = admit(spec, proposal, {
+      evidence,
+      moves: state2.moves,
+      toolsAvailable: opts.toolsAvailable ?? false
+    });
+    const record = {
+      kind: "move",
+      move: decision.move,
+      proposed: decision.proposed,
+      overridden: decision.overridden,
+      rule: decision.rule,
+      rationale: decision.rationale,
+      confidence: proposal.confidence,
+      targetField: decision.targetField,
+      knowledgeKey: decision.knowledgeKey
+    };
+    return [record, ...await this.perform(spec, state2, evidence, decision)];
+  }
+  /** What each admitted move actually does. */
+  async perform(spec, state2, evidence, d) {
+    switch (d.move) {
+      case "escalate":
+        return [{ kind: "escalate", reason: "agent_judgement" }];
+      case "close":
+        return this.settle(spec, evidence, { requireComplete: false });
+      case "ask": {
+        const field = d.targetField ?? nextField(spec, evidence);
+        if (field === null) return this.settle(spec, evidence, { requireComplete: false });
+        const text2 = d.message ?? await this.ask(spec, state2, evidence, field);
+        return [{ kind: "send", text: text2 }];
+      }
+      case "answer":
+      case "acknowledge":
+        return [{ kind: "send", text: d.message ?? "" }];
+      case "offer": {
+        const args = Object.fromEntries(
+          Object.entries(evidence).map(([k, v]) => [k, v.value])
+        );
+        return [
+          { kind: "send", text: d.message ?? "" },
+          { kind: "invoke", capability: d.capability, args }
+        ];
+      }
+    }
+  }
+  /**
+   * Score, route, finish. The one path by which a conversation ends with a
+   * decision, shared by both strategies so an open journey cannot be scored on
+   * different terms from a scripted one.
+   */
+  settle(spec, evidence, opts) {
+    if (opts.requireComplete && !evidenceComplete(spec, evidence)) {
+      return [{ kind: "complete", qualified: false }];
+    }
+    const s = score(spec, evidence);
+    const r = route(spec, s, evidence);
+    return [
+      { kind: "score", score: s },
+      { kind: "route", ...r },
+      { kind: "complete", qualified: qualifies(spec, s, evidence) }
+    ];
   }
   async ask(spec, state2, evidence, field) {
     const def = spec.evidence[field];
@@ -78334,17 +78845,6 @@ var AgentRuntime = class {
     return text2;
   }
 };
-function nextField(spec, evidence) {
-  const missing = Object.entries(spec.evidence).filter(([f]) => {
-    const got = evidence[f];
-    return got === void 0 || got.value === null || got.value === void 0;
-  });
-  const nothingEstablished = Object.keys(evidence).length === 0;
-  const eligible = missing.filter(([, d]) => !(d.sensitive && nothingEstablished));
-  const pool = eligible.length > 0 ? eligible : missing;
-  const required2 = pool.find(([, d]) => d.required);
-  return (required2 ?? pool[0])[0];
-}
 function escalationTrigger(spec, evidence, sentiment) {
   for (const raw of spec.policy.escalate_when) {
     const rule = raw.trim();
@@ -78390,14 +78890,14 @@ function bestMatch(haystack, values) {
   let best = null;
   for (const value of values) {
     const phrase = normalise(value).trim();
-    const words = phrase.split(" ").filter((w) => w.length > 0);
+    const words2 = phrase.split(" ").filter((w) => w.length > 0);
     const contiguous = haystack.includes(` ${phrase} `) || haystack.includes(` ${phrase}`);
-    const scattered = words.every((w) => haystack.includes(` ${w} `));
+    const scattered = words2.every((w) => haystack.includes(` ${w} `));
     if (!contiguous && !scattered) continue;
     const candidate = {
       value,
       confidence: contiguous ? 0.95 : 0.8,
-      specificity: words.length * (contiguous ? 2 : 1)
+      specificity: words2.length * (contiguous ? 2 : 1)
     };
     if (!best || candidate.specificity > best.specificity) best = candidate;
   }
@@ -78564,7 +79064,8 @@ var ReplayEngine = class {
       ci95: bootstrapDiffCI(outA.map((o) => o.qualified), outB.map((o) => o.qualified), { seed: 1 }),
       observedConversionByDecision: observed,
       divergent,
-      cost: { ...cost, usd: round42(this.spend()) }
+      cost: { ...cost, usd: round42(this.spend()) },
+      caveats: caveatsFor(specA, specB)
     };
   }
   /** Metered spend for this replay, if the runtime carries a meter. */
@@ -78587,6 +79088,13 @@ var ReplayEngine = class {
     return { leadId: state2.leadId, decision, qualified, turns: state2.turns.length };
   }
 };
+function caveatsFor(a, b) {
+  if (isOpen(a) === isOpen(b)) return [];
+  const [scripted, open] = isOpen(a) ? [b, a] : [a, b];
+  return [
+    `v${scripted.version} is scripted and v${open.version} is open, but replay runs both over transcripts that already exist. An open agent would have asked different questions and the lead would have answered differently, so both arms settle on the same recorded evidence and this comparison cannot see the strategy change. Use Simulate to compare these two.`
+  ];
+}
 function observedConversion(states, outcomes) {
   const tally = {};
   states.forEach((s, i) => {
@@ -78631,7 +79139,7 @@ var AttributionEngine = class {
       metricKinds: kinds,
       total: totals(facts, kinds),
       tree,
-      caveats: [...caveatsFor(facts), ...definitionDrift(facts, specs)]
+      caveats: [...caveatsFor2(facts), ...definitionDrift(facts, specs)]
     };
   }
 };
@@ -78716,7 +79224,7 @@ function definitionDrift(facts, specs) {
   }
   return drifted.length === 0 ? [] : [`Metric definitions drifted: ${drifted.join("; ")}.`];
 }
-function caveatsFor(facts) {
+function caveatsFor2(facts) {
   const out = [];
   const unattributed = facts.filter((f) => f.campaignId === UNATTRIBUTED).length;
   const uncosted = facts.filter((f) => f.mediaCost === 0).length;
@@ -78738,7 +79246,10 @@ var FINDING_CODES = [
   "routing_miscalibration",
   "timing",
   "policy_friction",
-  "version_regression"
+  "version_regression",
+  // Only reachable for an open-strategy version: the agent and the journey
+  // disagreeing about the job is a finding, not a bug.
+  "strategy_friction"
 ];
 var MIN_SUPPORT = 30;
 
@@ -78765,9 +79276,9 @@ var evidenceBottleneck = (all) => {
     return { findings: [], skipped: `only ${views.length} conversations had a reply` };
   }
   const scored = fields.map((field) => {
-    const established = (v) => v.evidence[field] !== void 0 && v.evidence[field] !== null;
-    const has2 = views.filter(established);
-    const missing = views.filter((v) => !established(v));
+    const established2 = (v) => v.evidence[field] !== void 0 && v.evidence[field] !== null;
+    const has2 = views.filter(established2);
+    const missing = views.filter((v) => !established2(v));
     return { field, has: has2, missing, collection: has2.length / views.length };
   }).sort((x, y) => x.collection - y.collection);
   const findings = [];
@@ -78976,6 +79487,74 @@ var versionRegression = (views) => {
   }
   return { findings };
 };
+var strategyFriction = (all) => {
+  const open = all.filter((v) => v.moves.length > 0);
+  if (open.length === 0) {
+    return { findings: [], skipped: "no open-strategy conversations in scope" };
+  }
+  if (open.length < MIN_SUPPORT) {
+    return {
+      findings: [],
+      skipped: `only ${open.length} open-strategy conversations (need ${MIN_SUPPORT})`
+    };
+  }
+  const decisions = open.flatMap((v) => v.moves);
+  const overridden = decisions.filter((m) => m.overridden);
+  if (overridden.length === 0) {
+    return {
+      findings: [],
+      skipped: `the guardrail admitted all ${decisions.length} decisions across ${open.length} conversations \u2014 nothing was refused`
+    };
+  }
+  const byRule = /* @__PURE__ */ new Map();
+  for (const m of overridden) bucket(byRule, m.rule ?? "(unnamed)", m);
+  const [rule, hits] = [...byRule.entries()].sort((a, b) => b[1].length - a[1].length)[0];
+  const rate2 = overridden.length / decisions.length;
+  const share = hits.length / overridden.length;
+  const wanted = [...new Set(hits.map((m) => m.proposed))].join(", ");
+  const refusedIn = open.filter((v) => v.moves.some((m) => m.overridden));
+  const clean = open.filter((v) => !v.moves.some((m) => m.overridden));
+  const comparable = supported(refusedIn, clean);
+  const { ci, diff } = comparable ? split(clean, refusedIn) : { ci: void 0, diff: 0 };
+  return {
+    findings: [{
+      code: "strategy_friction",
+      severity: rate2 > 0.3 ? "high" : rate2 > 0.15 ? "medium" : "low",
+      claim: `The agent's chosen move was refused on ${pct(rate2)} of turns, and ${pct(share)} of those were "${rule}".`,
+      detail: `${overridden.length} of ${decisions.length} decisions across ${open.length} conversations were overridden. Under "${rule}" the agent was reaching for: ${wanted}.` + (comparable && ci ? ` Conversations where it was refused at least once convert ${pct(Math.abs(diff))} ${diff > 0 ? "better" : "worse"} than ones where it was not (95% CI ${pct(ci[0])} .. ${pct(ci[1])}) \u2014 an override changes one turn, so read that as context rather than cause.` : ` Too few conversations in one of the two groups to compare conversion.`),
+      n: open.length,
+      effect: rate2,
+      ...comparable && ci ? { ci95: ci } : {},
+      suggestion: suggestFor(rule, wanted),
+      evidence: {
+        decisions: decisions.length,
+        overridden: overridden.length,
+        byRule: Object.fromEntries([...byRule].map(([r, ms]) => [r, ms.length]))
+      }
+    }]
+  };
+};
+function suggestFor(rule, wanted) {
+  switch (rule) {
+    case "answer_without_knowledge":
+      return "Leads are asking things no `knowledge:` entry covers, and the agent is deflecting instead of answering. Read the transcripts, and declare the facts you are happy for it to give word for word.";
+    case "close_without_required_evidence":
+      return "The agent keeps trying to end conversations early. Either a required field is one leads will not give, or the contract is longer than the conversation supports \u2014 consider making the weakest field optional.";
+    case "deflections_exhausted":
+      return "The agent is spending its whole budget being agreeable. Raise `strategy.max_deflections` if the conversations read well, or declare the facts it keeps needing so a deflection becomes an answer.";
+    case "ask_already_established":
+      return "The agent is asking for things it already has, which usually means the extraction is landing at a confidence the contract rejects. Check `confidence_min` on the fields it repeats.";
+    case "ask_sensitive_too_early":
+      return "The agent opens with a `sensitive` field. If that is acceptable for this vertical, drop the flag; otherwise leave it \u2014 the guardrail is doing its job.";
+    case "offer_without_privilege":
+    case "offer_without_binding":
+      return `The agent wants to use a tool it cannot reach (${wanted}). Grant the privilege under \`agent.privileges\` and declare the binding under \`tools:\`, or remove \`offer\` from the permitted moves.`;
+    case "answer_quoted_a_figure":
+      return "The agent keeps putting figures in its own framing. That is `quote_exact_fees` working as intended \u2014 the declared fact still reaches the lead.";
+    default:
+      return `Review why "${rule}" fires so often: either permit what the agent is reaching for (${wanted}), or change the journey so it stops reaching for it.`;
+  }
+}
 var DETECTORS = {
   evidence_bottleneck: evidenceBottleneck,
   segment_divergence: segmentDivergence,
@@ -78983,7 +79562,8 @@ var DETECTORS = {
   routing_miscalibration: routingMiscalibration,
   timing,
   policy_friction: policyFriction,
-  version_regression: versionRegression
+  version_regression: versionRegression,
+  strategy_friction: strategyFriction
 };
 function hourIn(at, tz) {
   try {
@@ -79041,6 +79621,12 @@ function view(events, specs, names) {
     qualified: Boolean(metrics.booleans[names.qualified]),
     converted: Boolean(metrics.booleans[names.conversion]),
     policyFired: policyEvents.map((e) => String(e.payload.ruleId)),
+    moves: events.filter((e) => e.type === "MoveChosen").map((e) => ({
+      move: String(e.payload.move ?? ""),
+      proposed: String(e.payload.proposed ?? e.payload.move ?? ""),
+      overridden: Boolean(e.payload.overridden),
+      rule: e.payload.rule == null ? null : String(e.payload.rule)
+    })),
     firstContactAt: events.find((e) => e.type === "MessageSent")?.occurredAt ?? ingested?.occurredAt ?? null,
     repliedAfterPolicy: firstPolicyAt === null ? null : turns.some((t) => t.role === "lead" && t.at > firstPolicyAt)
   };
@@ -79550,7 +80136,18 @@ function registerRoutes(app, deps) {
   app.get("/api/health", async () => ({ ok: true }));
   app.get(
     "/api/journeys/:journey/versions",
-    async (req) => ({ versions: await deps.registry.list(req.params.journey) })
+    async (req) => {
+      const versions = await deps.registry.list(req.params.journey);
+      const strategies = {};
+      await Promise.all(versions.map(async (v) => {
+        try {
+          strategies[v] = isOpen(await deps.registry.get(req.params.journey, v)) ? "open" : "scripted";
+        } catch {
+          strategies[v] = "scripted";
+        }
+      }));
+      return { versions, strategies };
+    }
   );
   app.get(
     "/api/journeys/:journey/diff",
@@ -79719,7 +80316,12 @@ function registerIntelligenceRoutes(app, deps) {
       }
       try {
         const spec = raw === void 0 ? await deps.registry.latest(req.params.journey) : await deps.registry.get(req.params.journey, Number(raw));
-        return { journey: spec.journey, version: spec.version, warnings: lintSpec(spec) };
+        return {
+          journey: spec.journey,
+          version: spec.version,
+          strategy: isOpen(spec) ? "open" : "scripted",
+          warnings: lintSpec(spec)
+        };
       } catch (err) {
         return reply.code(statusFor(err)).send({ error: err.message });
       }
@@ -79783,7 +80385,13 @@ function registerIntelligenceRoutes(app, deps) {
       }
       try {
         const spec = parseSpec(yaml);
-        return { valid: true, journey: spec.journey, version: spec.version, warnings: lintSpec(spec) };
+        return {
+          valid: true,
+          journey: spec.journey,
+          version: spec.version,
+          strategy: isOpen(spec) ? "open" : "scripted",
+          warnings: lintSpec(spec)
+        };
       } catch (err) {
         return { valid: false, error: err.message, warnings: [] };
       }
@@ -79918,6 +80526,113 @@ function registerChatRoutes(app, deps) {
 // packages/web/src/chat-service.ts
 import { randomUUID } from "node:crypto";
 
+// packages/core/src/agent/registry.ts
+var AgentRegistry = class _AgentRegistry {
+  constructor(agents) {
+    this.agents = agents;
+  }
+  static fromSpec(spec) {
+    const p = {
+      identity: spec.agent.identity,
+      persona: spec.agent.persona,
+      privileges: spec.agent.privileges,
+      dataScope: spec.agent.dataScope
+    };
+    return new _AgentRegistry(/* @__PURE__ */ new Map([[p.identity, p]]));
+  }
+  get(identity) {
+    const a = this.agents.get(identity);
+    if (!a) throw new Error(`unknown agent: ${identity}`);
+    return a;
+  }
+  /** Exact capability match. A prefix is never a grant. */
+  authorize(principal, capability) {
+    for (const priv of principal.privileges) {
+      const idx = priv.indexOf(":");
+      const cap = idx === -1 ? priv : priv.slice(0, idx);
+      if (cap === capability) {
+        return idx === -1 ? { allowed: true } : { allowed: true, scope: priv.slice(idx + 1) };
+      }
+    }
+    return {
+      allowed: false,
+      reason: `agent ${principal.identity} holds no privilege for ${capability}`
+    };
+  }
+  /** Deny wins; unlisted resources are denied (allow-list, not deny-list). */
+  canRead(principal, resource) {
+    if (principal.dataScope.deny.includes(resource)) return false;
+    return principal.dataScope.read.includes(resource);
+  }
+};
+
+// packages/runtime/src/broker.ts
+import { createHash } from "node:crypto";
+var mockBindings = {
+  "crm.upsert_lead": async (args) => ({ id: `crm_${hash(args).slice(0, 8)}`, binding: "mock-crm" }),
+  "calendar.book_slot": async () => ({ bookingId: "bk_1", startsAt: "2026-09-10T10:00:00Z" }),
+  "catalog.lookup_program": async (args) => ({ program: args.program ?? "executive_mba", feesBand: "5L_to_15L" })
+};
+var BINDING_NAMES = {
+  "crm.upsert_lead": "mock-crm",
+  "calendar.book_slot": "mock-calendar",
+  "catalog.lookup_program": "mock-catalog"
+};
+var ToolBroker = class {
+  constructor(registry2, store, bindings) {
+    this.registry = registry2;
+    this.store = store;
+    this.bindings = bindings;
+  }
+  /**
+   * The single egress point. Privilege is enforced here, not suggested by the
+   * spec. Arguments are hashed rather than logged — the event log must stay
+   * clean of PII.
+   */
+  async invoke(ctx, principal, capability, args) {
+    const base = { ...ctx, agentId: principal.identity };
+    const authz = this.registry.authorize(principal, capability);
+    if (!authz.allowed) {
+      await this.store.append({
+        ...base,
+        type: "AuthorizationDenied",
+        payload: {
+          capability,
+          principal: principal.identity,
+          reason: authz.reason,
+          attemptedAt: (/* @__PURE__ */ new Date()).toISOString()
+        }
+      });
+      return { ok: false, error: authz.reason };
+    }
+    const binding = this.bindings[capability];
+    if (!binding) return { ok: false, error: `no binding configured for ${capability}` };
+    const startedAt = Date.now();
+    let value;
+    let error2;
+    try {
+      value = await binding(args, authz.scope);
+    } catch (err) {
+      error2 = err.message;
+    }
+    await this.store.append({
+      ...base,
+      type: "ToolInvoked",
+      payload: {
+        capability,
+        binding: BINDING_NAMES[capability] ?? "custom",
+        argsHash: hash(args),
+        resultStatus: error2 ? "error" : "ok",
+        latencyMs: Date.now() - startedAt
+      }
+    });
+    return error2 ? { ok: false, error: error2 } : { ok: true, value };
+  }
+};
+function hash(v) {
+  return createHash("sha256").update(JSON.stringify(v ?? null)).digest("hex");
+}
+
 // packages/runtime/src/persist.ts
 function actionsToEvents(actions, base, channel) {
   const events = [];
@@ -79929,7 +80644,9 @@ function actionsToEvents(actions, base, channel) {
     completed: false,
     qualified: false,
     score: null,
-    decision: null
+    decision: null,
+    move: null,
+    invocations: []
   };
   for (const a of actions) {
     switch (a.kind) {
@@ -79982,6 +80699,32 @@ function actionsToEvents(actions, base, channel) {
         out.completed = true;
         out.qualified = a.qualified;
         break;
+      case "move":
+        out.move = {
+          move: a.move,
+          proposed: a.proposed,
+          overridden: a.overridden,
+          rule: a.rule,
+          rationale: a.rationale
+        };
+        events.push({
+          ...base,
+          type: "MoveChosen",
+          payload: {
+            move: a.move,
+            proposed: a.proposed,
+            overridden: a.overridden,
+            rule: a.rule,
+            rationale: a.rationale,
+            confidence: a.confidence,
+            targetField: a.targetField,
+            knowledgeKey: a.knowledgeKey
+          }
+        });
+        break;
+      case "invoke":
+        out.invocations.push({ capability: a.capability, args: a.args });
+        break;
     }
   }
   return out;
@@ -80022,7 +80765,7 @@ function sum(xs, f) {
 }
 
 // packages/batch/src/experiment/allocator.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 var TrafficAllocator = class {
   bySource = /* @__PURE__ */ new Map();
   constructor(allocations) {
@@ -80043,7 +80786,7 @@ var TrafficAllocator = class {
   allocate(source, key) {
     const arms = this.bySource.get(source);
     if (!arms) throw new Error(`no allocation configured for source "${source}"`);
-    const digest = createHash("sha256").update(`${source}:${key}`).digest();
+    const digest = createHash2("sha256").update(`${source}:${key}`).digest();
     const bucket2 = digest.readUInt32BE(0) % 100;
     let cumulative = 0;
     for (const arm of arms) {
@@ -80063,12 +80806,13 @@ var TrafficAllocator = class {
 // packages/web/src/chat-service.ts
 var PREFIX = "web_";
 var ChatService = class {
-  constructor(store, registry2, runtime, fx, offline) {
+  constructor(store, registry2, runtime, fx, offline, bindings = mockBindings) {
     this.store = store;
     this.registry = registry2;
     this.runtime = runtime;
     this.fx = fx;
     this.offline = offline;
+    this.bindings = bindings;
   }
   async start(opts) {
     const version2 = await this.chooseVersion(opts);
@@ -80106,10 +80850,14 @@ var ChatService = class {
   async advance(spec, base) {
     const folded = await this.store.fold(base.leadId);
     this.runtime.meter.drain();
-    const actions = await this.runtime.step(spec, folded, { allowFollowUp: true });
+    const actions = await this.runtime.step(spec, folded, {
+      allowFollowUp: true,
+      toolsAvailable: true
+    });
     const applied = actionsToEvents(actions, base, "web");
     render(applied, await this.variables(spec, base.leadId));
     if (applied.events.length > 0) await this.store.appendMany(applied.events);
+    await this.performInvocations(spec, base, applied.invocations);
     await recordModelCost(this.store, {
       leadId: base.leadId,
       journey: base.journey,
@@ -80117,6 +80865,29 @@ var ChatService = class {
       agentId: base.agentId
     }, this.runtime.meter.drain(), this.fx);
     return { reply: applied.sentText, state: await this.view(spec, base.leadId) };
+  }
+  /**
+   * Carries out the tools the agent chose to use.
+   *
+   * Deliberately after the message is on the record: the lead sees "let me look
+   * that up" whether or not the lookup then succeeds, and the result reaches them
+   * on the next turn because the planner reads the log. A failure is a
+   * `ToolInvoked` with an error status, never a thrown request — one broken
+   * binding must not lose a conversation.
+   */
+  async performInvocations(spec, base, invocations) {
+    if (invocations.length === 0) return;
+    const agents = AgentRegistry.fromSpec(spec);
+    const broker = new ToolBroker(agents, this.store, this.bindings);
+    const principal = agents.get(spec.agent.identity);
+    const ctx = {
+      leadId: base.leadId,
+      journey: base.journey,
+      journeyVersion: base.journeyVersion
+    };
+    for (const { capability, args } of invocations) {
+      await broker.invoke(ctx, principal, capability, args);
+    }
   }
   async view(spec, leadId) {
     const events = await this.store.query({ leadId });
@@ -80132,6 +80903,7 @@ var ChatService = class {
         sensitive: Boolean(def.sensitive)
       };
     });
+    const movesByTurn = pairMovesToTurns(events);
     const escalation = events.filter((e) => e.type === "PolicyEvaluated").at(-1);
     const routed = events.filter((e) => e.type === "Routed").at(-1);
     const evaluated = evaluateAll(spec.metrics, events);
@@ -80139,7 +80911,13 @@ var ChatService = class {
       leadId,
       journey: spec.journey,
       version: spec.version,
-      turns: folded.turns.map((t) => ({ role: t.role, text: t.text, at: t.at.toISOString() })),
+      strategy: isOpen(spec) ? "open" : "scripted",
+      turns: folded.turns.map((t, i) => ({
+        role: t.role,
+        text: t.text,
+        at: t.at.toISOString(),
+        ...movesByTurn.get(i) ? { move: movesByTurn.get(i) } : {}
+      })),
       evidence,
       missingRequired: evidence.filter((e) => e.required && (e.value === null || e.value === void 0)).map((e) => e.field),
       score: folded.score ?? null,
@@ -80147,9 +80925,18 @@ var ChatService = class {
       metrics: { ...evaluated.booleans, ...evaluated.aggregates },
       completed: routed !== void 0,
       escalated: escalation !== void 0,
+      endedReason: routed !== void 0 ? "routed" : escalation !== void 0 ? "escalated" : folded.turns.length >= spec.policy.max_turns ? "turn_budget" : null,
       escalationRule: escalation ? String(escalation.payload.ruleId) : null,
       modelCost: events.filter((e) => e.type === "CostObserved" && e.payload.kind === "model").reduce((s, e) => s + Number(e.payload.amount ?? 0), 0),
       currency: this.fx.currency,
+      moves: folded.moves.map((m) => ({
+        move: m.move,
+        proposed: m.proposed,
+        overridden: m.overridden,
+        rule: m.rule,
+        rationale: m.rationale,
+        at: m.at.toISOString()
+      })),
       offline: this.offline
     };
   }
@@ -80192,6 +80979,37 @@ var ChatService = class {
     return live;
   }
 };
+function pairMovesToTurns(events) {
+  const byTurn = /* @__PURE__ */ new Map();
+  let turnIndex = 0;
+  let pending = null;
+  for (const e of events) {
+    if (e.type === "MoveChosen") {
+      pending = {
+        move: String(e.payload.move ?? ""),
+        proposed: String(e.payload.proposed ?? e.payload.move ?? ""),
+        overridden: Boolean(e.payload.overridden),
+        rule: e.payload.rule == null ? null : String(e.payload.rule),
+        rationale: String(e.payload.rationale ?? ""),
+        at: e.occurredAt.toISOString()
+      };
+      continue;
+    }
+    if (e.type === "MessageSent") {
+      if (pending) {
+        byTurn.set(turnIndex, pending);
+        pending = null;
+      }
+      turnIndex++;
+      continue;
+    }
+    if (e.type === "MessageReceived") {
+      turnIndex++;
+      pending = null;
+    }
+  }
+  return byTurn;
+}
 function render(applied, values) {
   for (const event of applied.events) {
     if (event.type !== "MessageSent") continue;
@@ -80232,7 +81050,7 @@ function constantTimeEquals(expected, supplied) {
 var import_yaml2 = __toESM(require_dist2(), 1);
 
 // packages/web/src/routes/openapi-content.ts
-var OPENAPI_YAML = 'openapi: 3.0.3\n\ninfo:\n  title: E2 API\n  version: 0.3.0\n  description: |\n    The read and control surface over the event spine.\n\n    **The one idea to hold on to:** there is a single append-only `events` table, and\n    every number this API returns is a *fold* over it. Replay, the A/B scoreboard, the\n    ROI report and the copilot all read the same log through the same predicates, which\n    is why they cannot disagree with each other. There is no separate analytics pipeline\n    to fall out of sync, and nothing here is precomputed.\n\n    A second idea that explains several response shapes: the log records **observable\n    facts only**. There is deliberately no `Converted` event, because "converted" means\n    different things to marketing, to sales and to finance. Each tenant declares its own\n    named metrics as predicates over the facts (`metrics:` in the journey spec), so\n    responses report metric *names the tenant chose* rather than a fixed vocabulary.\n\n    Money is always an **integer in minor units** \u2014 paise for INR, cents for USD. Never a\n    float, anywhere.\n  contact:\n    name: Platform team\n    email: fde@engati.com\n  license:\n    name: Proprietary\n\nservers:\n  - url: http://localhost:3000\n    description: Local development\n  - url: https://api.e2.example.com\n    description: Production\n\nsecurity:\n  - bearerAuth: []\n\ntags:\n  - name: Journeys\n    description: The declarative journey specifications and their versions.\n  - name: Replay\n    description: Counterfactual replay of historical leads through a different version.\n  - name: Simulation\n    description: Synthetic cohorts against a version, before any real lead is touched.\n  - name: Chat\n    description: Live conversations between a person and a published agent.\n  - name: Intelligence\n    description: ROI attribution, findings, and the copilot.\n  - name: Operations\n    description: Health and API discovery.\n\npaths:\n  /health:\n    get:\n      operationId: getHealth\n      tags: [Operations]\n      summary: Liveness probe\n      description: |\n        Answers without authentication so a load balancer can probe it. It reports that\n        the process is up; it does not check the database.\n      security: []\n      responses:\n        "200":\n          description: The process is running.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/HealthStatus"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/health:\n    get:\n      operationId: getHealthViaApi\n      tags: [Operations]\n      summary: Liveness probe, under the API prefix\n      description: |\n        Identical to `/health`. Both exist because a host that routes everything under\n        `/api` to a single function cannot reach a path outside that prefix, and a load\n        balancer conventionally probes the bare one.\n      security: []\n      responses:\n        "200":\n          description: The process is running.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/HealthStatus"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/openapi.json:\n    get:\n      operationId: getOpenApiDocument\n      tags: [Operations]\n      summary: This document\n      description: |\n        The API surface as JSON, unauthenticated so a client can discover it before it\n        has a credential. A test asserts that every route the server registers appears\n        here and vice versa, so this document cannot drift away from the running code.\n      security: []\n      responses:\n        "200":\n          description: The OpenAPI 3.0 document.\n          content:\n            application/json:\n              schema:\n                type: object\n                description: An OpenAPI 3.0 document.\n                additionalProperties: true\n                example: { openapi: "3.0.3" }\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/openapi.yaml:\n    get:\n      operationId: getOpenApiDocumentAsYaml\n      tags: [Operations]\n      summary: This document, as YAML\n      description: |\n        Byte-for-byte the authored source of this specification. The JSON form is parsed\n        from it, so the two cannot disagree.\n      security: []\n      responses:\n        "200":\n          description: The OpenAPI 3.0 document as YAML.\n          content:\n            application/yaml:\n              schema:\n                type: string\n                description: An OpenAPI 3.0 document in YAML.\n                example: "openapi: 3.0.3"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/versions:\n    get:\n      operationId: listJourneyVersions\n      tags: [Journeys]\n      summary: List the published versions of a journey\n      description: |\n        Newest first. Versions are immutable once published: a change is always a new\n        version, which is what lets lift be attributed to a specific edit.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n      responses:\n        "200":\n          description: The published version numbers, newest first.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/JourneyVersionList"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/diff:\n    get:\n      operationId: diffJourneyVersions\n      tags: [Journeys]\n      summary: Structural diff between two versions\n      description: |\n        A characterisable, path-level diff \u2014 `evidence.decision_maker.required` went from\n        `false` to `true`. This is what makes an A/B result actionable: you can attribute\n        lift to a named change. A journey written as a prose prompt cannot be diffed this\n        way, which is the concrete reason this platform declares journeys instead.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/VersionA"\n        - $ref: "#/components/parameters/VersionB"\n      responses:\n        "200":\n          description: Every path that differs between the two versions.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/SpecDiff"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/live:\n    get:\n      operationId: getLiveVersion\n      tags: [Journeys]\n      summary: Which version answers by default\n      description: |\n        Distinct from the newest published version, and that distinction is the point:\n        publishing makes a version exist so it can be tried, promoting makes it the one\n        real traffic meets. A chat session with no version named gets this one.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n      responses:\n        "200":\n          description: The live version.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/LiveVersion"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/promote:\n    post:\n      operationId: promoteJourneyVersion\n      tags: [Journeys]\n      summary: Point default traffic at a published version\n      description: |\n        Shipping, as a separate act from publishing. The version must already be\n        published; this only moves the pointer, so it is instant and reversible \u2014 promote\n        the previous version back and traffic returns to it on the next session.\n\n        Sessions already in flight keep the version they started on. A conversation whose\n        agent changed mid-way would be neither version\'s result.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/PromoteRequest"\n      responses:\n        "200":\n          description: Promoted. New sessions get this version.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/LiveVersion"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/source:\n    get:\n      operationId: getJourneySource\n      tags: [Journeys]\n      summary: The authored YAML for a version\n      description: |\n        Byte for byte as it was published. Key order in the source is load-bearing \u2014\n        routing is first-match-wins, and a spec round-tripped through JSON comes back with\n        its rules reordered \u2014 so the editor loads this rather than a re-serialised spec.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/JourneyVersion"\n      responses:\n        "200":\n          description: The version and its source.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/JourneySource"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/lint:\n    post:\n      operationId: lintDraftJourney\n      tags: [Journeys]\n      summary: Check YAML that has not been published yet\n      description: |\n        The editor\'s companion: it checks a draft while someone is still typing, so a\n        problem surfaces before publishing rather than after.\n\n        **YAML that does not parse returns 200 with `valid: false`**, not an error status.\n        A malformed draft is an expected state of an editor, and the caller needs the\n        message to display, not a failed request.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/DraftSpec"\n      responses:\n        "200":\n          description: Whether it parses, and every warning against it.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/DraftLintResult"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/publish:\n    post:\n      operationId: publishJourneyVersion\n      tags: [Journeys]\n      summary: Publish a new journey version\n      description: |\n        **Publishing is deployment.** There is no separate deploy step: from the moment\n        this returns, a new chat session can be served by this version, and a traffic\n        split can send it real leads.\n\n        Versions are immutable. Republishing a version number that exists returns 409 \u2014\n        bump the version instead. That immutability is what makes lift attributable to a\n        named change rather than to "the prompt at some point last month".\n\n        Lint warnings are returned with the published version rather than blocking it: a\n        spec may legitimately rely on optional evidence a lead volunteers, and the platform\n        should not be the judge of that.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/DraftSpec"\n      responses:\n        "200":\n          description: Published, and live for new conversations.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/LintReport"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "409":\n          description: That version number is already published, and versions are immutable.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/Error"\n              example:\n                error: mba-admissions-qualification v5 is already published; versions are immutable\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/lint:\n    get:\n      operationId: lintJourneyVersion\n      tags: [Journeys]\n      summary: Static checks against a journey version\n      description: |\n        Catches journeys that cannot do what they claim, before a single lead meets them.\n\n        The check that motivated this endpoint: a journey whose *required* evidence can\n        never reach its own qualifying threshold will qualify nobody, and the symptom \u2014\n        a simulation run reporting 0% qualified \u2014 looks like broken software rather than\n        a broken spec. It also flags scoring weights on fields that do not exist, metrics\n        that do not parse, and a booking metric in a journey whose routing never hands off.\n\n        These are warnings, not errors: a spec may legitimately rely on optional evidence\n        a lead volunteers. Omit `version` for the latest.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/JourneyVersion"\n      responses:\n        "200":\n          description: The version checked, and every warning against it.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/LintReport"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/replay-estimate:\n    get:\n      operationId: estimateReplayCost\n      tags: [Replay]\n      summary: What a replay would cost, before committing to it\n      description: |\n        Opening a replay screen used to fire the full job on mount \u2014 thousands of leads,\n        hundreds of model calls, real money, no warning. Nothing that can spend should\n        start without someone choosing to, so this answers the question first.\n\n        Only leads whose evidence is **not already on the record** cost anything. A lead\n        the journey has already run carries its `EvidenceExtracted` events, and re-deriving\n        them from the same transcript would pay a model call to reproduce a recorded fact.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/VersionA"\n        - $ref: "#/components/parameters/VersionB"\n        - $ref: "#/components/parameters/CohortSize"\n      responses:\n        "200":\n          description: How many leads, how many need extraction, and what that costs.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/ReplayEstimate"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/replay:\n    post:\n      operationId: replayCohort\n      tags: [Replay]\n      summary: Replay historical leads through a different journey version\n      description: |\n        Takes leads that already happened and asks what a different version would have\n        done with them. Returns the qualification lift with a 95% confidence interval and\n        the conversations where the two versions diverged.\n\n        **Read the two number families separately.** `observedConversionByDecision` is\n        measured from history and is a fact. `projectedConversions` applies those observed\n        rates to counterfactual routing and is a model. Presenting them as one number is\n        the fastest way to lose a room, so the API keeps them in separate fields and the\n        console renders them in different colours.\n\n        Omit `leadIds` to replay every lead on the journey.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/ReplayRequest"\n      responses:\n        "200":\n          description: The lift, its interval, and the divergent conversations.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/Lift"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/limits:\n    get:\n      operationId: getLimits\n      tags: [Operations]\n      summary: What this deployment will accept\n      description: |\n        A limit the client cannot see is a limit the client will exceed. Cohort sizes\n        differ by host \u2014 a serverless function has a wall-clock ceiling that a long-lived\n        server does not \u2014 so the console reads the ceiling rather than hardcoding a size\n        the host will then kill mid-run.\n      responses:\n        "200":\n          description: The deployment\'s operating limits.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/Limits"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/simulate:\n    post:\n      operationId: simulateCohort\n      tags: [Simulation]\n      summary: Run a synthetic cohort against a journey version\n      description: |\n        Generates `n` personas, runs each through the version end to end, and scores the\n        conversations. Everything it writes is `sim`-scoped and carries a `runId`, so no\n        live-scoped read can ever see it.\n\n        This is how a new version is checked before a real lead meets it. Alerts fire on\n        declared thresholds \u2014 a policy breach or an evidence-collection drop \u2014 so a bad\n        version is caught here rather than in production.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/SimulateRequest"\n      responses:\n        "200":\n          description: Run summary, aggregate quality, and any alerts that fired.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/SimulationResult"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/compare:\n    post:\n      operationId: compareJourneyVersions\n      tags: [Simulation]\n      summary: A/B two journey versions over one simulated cohort\n      description: |\n        Runs both versions against the **same seeded personas**, which is what makes the\n        comparison paired and the confidence interval honest. An unpaired interval over\n        two independently drawn cohorts would overstate the uncertainty and hide real\n        differences.\n\n        `verdict` is `inconclusive` whenever the interval spans zero. That is a result,\n        not a failure: it means the data does not support a decision yet.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/CompareRequest"\n      responses:\n        "200":\n          description: Both arms, the deltas, and the verdict.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/Scoreboard"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/roi:\n    get:\n      operationId: getAttributionReport\n      tags: [Intelligence]\n      summary: Cost and outcomes attributed campaign to creative to journey version\n      description: |\n        A fold over the event log producing spend, outcome counts and cost per outcome at\n        each level of the hierarchy.\n\n        Two things to know before quoting a number from this endpoint:\n\n        1. **Each lead is evaluated under the metric definitions of the version it ran\n           under**, not the latest spec. Otherwise editing `conversion:` would silently\n           rewrite last quarter. When definitions drifted across versions present in the\n           data, `caveats` says the column sums two different questions.\n        2. **Media spend is allocated, not observed.** Ad platforms report per campaign\n           per day; the spine needs a lead on every event. Allocation is even, the method\n           travels in each `CostObserved` payload, and `caveats` states it. Model spend,\n           by contrast, is metered from real token usage.\n\n        `costPer` is `null` rather than infinity when nothing converted \u2014 an undefined\n        ratio, not an enormous one.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/ReportingCurrency"\n      responses:\n        "200":\n          description: Totals, the attribution tree, and the assumptions behind them.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/AttributionReport"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/insights:\n    get:\n      operationId: listInsights\n      tags: [Intelligence]\n      summary: Ranked findings about a journey\n      description: |\n        Seven detectors run over the folded log: evidence bottleneck, segment divergence,\n        drop-off, routing miscalibration, timing, policy friction and version regression.\n\n        Every finding carries its support (`n`), and every comparison carries a 95%\n        confidence interval. **A finding whose interval spans zero is not emitted**, and\n        neither is one below thirty leads on either side \u2014 noise shown to a marketer costs\n        the credibility the real findings then need. The one exception is routing\n        miscalibration, where "hot and cold are indistinguishable" *is* the finding.\n\n        `skipped` names the detectors that could not run and why. A detector that silently\n        returns nothing reads as a clean bill of health, which is the opposite of the\n        truth when the reason is that no policy event exists yet.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/ConversionMetric"\n        - $ref: "#/components/parameters/QualifiedMetric"\n      responses:\n        "200":\n          description: Findings ranked by severity then effect size.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/InsightReport"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/chat/sessions:\n    post:\n      operationId: startChatSession\n      tags: [Chat]\n      summary: Begin a conversation with a published agent\n      description: |\n        A session is a lead. Everything it writes is `live`-scoped with no `runId`, so the\n        conversation lands in the same log the ROI and insight screens already read \u2014 a\n        real conversation is not a special case here, it is the ordinary case.\n\n        The first agent turn is **pinned and deterministic**, never a model call, so the\n        AI disclosure a person sees first cannot be improvised.\n\n        Pass `version` to talk to a specific one. Pass `split` instead \u2014 `{"4": 50, "5":\n        50}` \u2014 and the traffic allocator assigns deterministically, which is how a new\n        agent takes real traffic without disturbing the one already running. Pass neither\n        and the latest published version answers.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/StartChatRequest"\n      responses:\n        "200":\n          description: The opening turn and the conversation\'s state.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/ChatReply"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/chat/sessions/{leadId}/messages:\n    post:\n      operationId: sendChatMessage\n      tags: [Chat]\n      summary: Say something, and get the agent\'s reply\n      description: |\n        One runtime step, persisted. Evidence extracted this turn, any score and route it\n        produced, and the tokens it cost are all written before this returns \u2014 cost per\n        turn rather than per conversation, because a conversation someone abandons still\n        cost real money and still belongs in cost per outcome.\n\n        `reply` is null when the agent has nothing left to say: the conversation completed,\n        or a policy rule escalated it to a human.\n      parameters:\n        - $ref: "#/components/parameters/LeadId"\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/ChatMessageRequest"\n      responses:\n        "200":\n          description: The agent\'s reply and the updated state.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/ChatReply"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/chat/sessions/{leadId}:\n    get:\n      operationId: getChatSession\n      tags: [Chat]\n      summary: The full state of a conversation\n      description: |\n        Folded from the event log rather than held in memory, so a session survives a\n        restart and two clients watching the same conversation cannot disagree.\n      parameters:\n        - $ref: "#/components/parameters/LeadId"\n      responses:\n        "200":\n          description: The conversation and everything derived from it.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/ChatState"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/copilot/ask:\n    post:\n      operationId: askCopilot\n      tags: [Intelligence]\n      summary: Ask a question about a journey, in words\n      description: |\n        The copilot reads through the same folds these endpoints expose \u2014 never raw SQL,\n        which from a model is both an injection surface and a hallucination surface. It\n        therefore cannot report a number the ROI endpoint disagrees with.\n\n        It may return a `view` (a rendering descriptor from a closed set: bar, table or\n        stat \u2014 never markup, so there is nothing to sanitise) and a `diff` (a proposed new\n        journey version).\n\n        **A returned `diff` has already been parsed, linted and diffed against the current\n        version.** An invalid proposal is handed back to the model to correct and never\n        reaches this response, so anything you receive here would publish as it stands.\n        Nothing is published by this endpoint.\n\n        When no model credential is configured the copilot answers by routing keywords to\n        the same tools and sets `offline: true`. The data is real either way; the\n        reasoning is not.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/CopilotRequest"\n      responses:\n        "200":\n          description: The answer, with an optional rendering and an optional proposal.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/CopilotAnswer"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\ncomponents:\n  securitySchemes:\n    bearerAuth:\n      type: http\n      scheme: bearer\n      description: |\n        Set `API_TOKEN` on the server to require it. Unset \u2014 the default for local\n        development \u2014 the guard is not installed and every endpoint is open. The hook is\n        real code either way, so enabling authentication is a variable, not a project.\n\n  parameters:\n    JourneyName:\n      name: journey\n      in: path\n      required: true\n      description: The journey\'s stable name, as declared by `journey:` in its spec.\n      schema:\n        type: string\n        minLength: 1\n        maxLength: 120\n        pattern: "^[a-z0-9][a-z0-9-]*$"\n        example: mba-admissions-qualification\n\n    VersionA:\n      name: a\n      in: query\n      required: true\n      description: The baseline version \u2014 the one currently live.\n      schema:\n        type: integer\n        minimum: 1\n        example: 3\n\n    VersionB:\n      name: b\n      in: query\n      required: true\n      description: The candidate version being evaluated against the baseline.\n      schema:\n        type: integer\n        minimum: 1\n        example: 4\n\n    JourneyVersion:\n      name: version\n      in: query\n      required: false\n      description: Which version to check. Omit for the latest published version.\n      schema:\n        type: integer\n        minimum: 1\n        example: 4\n\n    LeadId:\n      name: leadId\n      in: path\n      required: true\n      description: |\n        The session\'s lead id, returned when the session started. Chat leads carry a\n        `web_` prefix so a seed script\'s cleanup can never delete a real conversation.\n      schema:\n        type: string\n        pattern: "^web_[0-9a-f]{16}$"\n        example: web_3f9a21c07b4e6d15\n\n    CohortSize:\n      name: n\n      in: query\n      required: false\n      description: Cap the cohort to the first N leads. Omit for all of them.\n      schema:\n        type: integer\n        minimum: 1\n        example: 200\n\n    ReportingCurrency:\n      name: currency\n      in: query\n      required: false\n      description: |\n        ISO 4217 code for the reporting currency. Amounts are integer minor units of it.\n        Defaults to INR.\n      schema:\n        type: string\n        pattern: "^[A-Z]{3}$"\n        default: INR\n        example: INR\n\n    ConversionMetric:\n      name: conversion\n      in: query\n      required: false\n      description: |\n        Which of the tenant\'s declared metrics means "converted" for this question. There\n        is no platform-wide definition. If the named metric is not declared on the\n        journey, every detector is skipped with that reason rather than substituting a\n        guess.\n      schema:\n        type: string\n        minLength: 1\n        maxLength: 60\n        default: conversion\n        example: conversion\n\n    QualifiedMetric:\n      name: qualified\n      in: query\n      required: false\n      description: Which declared metric means "qualified".\n      schema:\n        type: string\n        minLength: 1\n        maxLength: 60\n        default: qualified_lead\n        example: qualified_lead\n\n  responses:\n    BadRequest:\n      description: The request was malformed or violated a stated constraint.\n      content:\n        application/json:\n          schema:\n            $ref: "#/components/schemas/Error"\n          example:\n            error: journey (string), a and b (integers) are required\n    Unauthorized:\n      description: The Bearer token was missing or invalid.\n      content:\n        application/json:\n          schema:\n            $ref: "#/components/schemas/Error"\n          example:\n            error: a valid Bearer token is required\n    NotFound:\n      description: |\n        The journey or version does not exist. Distinguished deliberately from a 502:\n        collapsing both into 404 once hid an authentication failure behind\n        "journey not found" for an afternoon.\n      content:\n        application/json:\n          schema:\n            $ref: "#/components/schemas/Error"\n          example:\n            error: "journey not found: mba-admissions-qualification v9"\n    InternalError:\n      description: |\n        An upstream dependency failed \u2014 the database, or the model provider. Returned as\n        502 by the running server when the failure is identifiably upstream.\n      content:\n        application/json:\n          schema:\n            $ref: "#/components/schemas/Error"\n          example:\n            error: connection refused\n\n  schemas:\n    Error:\n      type: object\n      description: The single error shape every endpoint uses on every failure.\n      required: [error]\n      additionalProperties: false\n      properties:\n        error:\n          type: string\n          description: A message written for the developer reading it, not an error code.\n          minLength: 1\n          maxLength: 500\n          example: currency must be a three-letter ISO code\n      example:\n        error: currency must be a three-letter ISO code\n\n    HealthStatus:\n      type: object\n      required: [ok]\n      additionalProperties: false\n      properties:\n        ok:\n          type: boolean\n          description: Always true when the process can answer at all.\n          example: true\n      example:\n        ok: true\n\n    JourneyVersionList:\n      type: object\n      required: [versions]\n      additionalProperties: false\n      properties:\n        versions:\n          type: array\n          description: Published version numbers, newest first.\n          items:\n            type: integer\n            minimum: 1\n            example: 4\n          example: [5, 4, 3]\n      example:\n        versions: [5, 4, 3]\n\n    SpecChange:\n      type: object\n      description: One path that differs between two versions.\n      required: [path, kind]\n      additionalProperties: false\n      properties:\n        path:\n          type: string\n          description: Dotted path into the parsed spec.\n          example: evidence.decision_maker.required\n        kind:\n          type: string\n          enum: [added, removed, changed]\n          example: changed\n        before:\n          nullable: true\n          description: The value in the earlier version. Absent when the path was added.\n          example: false\n        after:\n          nullable: true\n          description: The value in the later version. Absent when the path was removed.\n          example: true\n      example:\n        path: evidence.decision_maker.required\n        kind: changed\n        before: false\n        after: true\n\n    SpecDiff:\n      type: object\n      required: [changes]\n      additionalProperties: false\n      properties:\n        changes:\n          type: array\n          items:\n            $ref: "#/components/schemas/SpecChange"\n      example:\n        changes:\n          - path: version\n            kind: changed\n            before: 4\n            after: 5\n          - path: evidence.decision_maker.required\n            kind: changed\n            before: false\n            after: true\n\n    StartChatRequest:\n      type: object\n      required: [journey]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          minLength: 1\n          maxLength: 120\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          description: A specific version. Omit for the latest, or supply `split`.\n          example: 5\n        split:\n          type: object\n          description: |\n            Live A/B. Version number to percentage, summing to 100. Assignment is\n            deterministic, so re-running an experiment does not reshuffle anyone.\n          additionalProperties:\n            type: number\n            minimum: 0\n            maximum: 100\n          minProperties: 2\n          example: { "4": 50, "5": 50 }\n        source:\n          type: string\n          maxLength: 60\n          default: web_chat\n          example: web_chat\n        campaignId:\n          type: string\n          maxLength: 120\n          default: direct\n          example: meta_scholarships\n        creativeId:\n          type: string\n          maxLength: 120\n          default: console\n          example: cr_fees\n      example:\n        journey: mba-admissions-qualification\n        split: { "4": 50, "5": 50 }\n\n    ChatMessageRequest:\n      type: object\n      required: [text]\n      additionalProperties: false\n      properties:\n        text:\n          type: string\n          minLength: 1\n          maxLength: 2000\n          example: I am looking at the executive MBA for this intake.\n      example:\n        text: I am looking at the executive MBA for this intake.\n\n    ChatTurn:\n      type: object\n      required: [role, text, at]\n      additionalProperties: false\n      properties:\n        role:\n          type: string\n          enum: [agent, lead]\n          example: agent\n        text:\n          type: string\n          example: Hi, I am an AI assistant from the admissions team.\n        at:\n          type: string\n          format: date-time\n          example: "2026-09-05T09:14:02.117Z"\n\n    EvidenceView:\n      type: object\n      description: |\n        One field of the journey\'s declared evidence contract, and whether this\n        conversation has established it yet. Watching these fill in is the difference\n        between a declared contract and a prompt.\n      required: [field, required, value, confidence, sensitive]\n      additionalProperties: false\n      properties:\n        field:\n          type: string\n          example: budget_band\n        required:\n          type: boolean\n          example: true\n        value:\n          nullable: true\n          description: Null until established.\n          example: needs_financing\n        confidence:\n          type: number\n          format: double\n          nullable: true\n          minimum: 0\n          maximum: 1\n          example: 0.88\n        sensitive:\n          type: boolean\n          description: Declared `sensitive`, so the agent will not open with it.\n          example: true\n\n    ChatState:\n      type: object\n      required:\n        [leadId, journey, version, turns, evidence, missingRequired, score, decision, metrics, completed, escalated, escalationRule, modelCost, currency, offline]\n      additionalProperties: false\n      properties:\n        leadId:\n          type: string\n          example: web_3f9a21c07b4e6d15\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          example: 5\n        turns:\n          type: array\n          items:\n            $ref: "#/components/schemas/ChatTurn"\n        evidence:\n          type: array\n          items:\n            $ref: "#/components/schemas/EvidenceView"\n        missingRequired:\n          type: array\n          description: Required fields still to be established. Empty means ready to score.\n          items:\n            type: string\n            example: budget_band\n          example: [budget_band]\n        score:\n          type: integer\n          nullable: true\n          minimum: 0\n          maximum: 100\n          description: Null until required evidence is complete.\n          example: 80\n        decision:\n          type: string\n          nullable: true\n          description: The routing decision, named by the journey\'s own routing block.\n          example: hot\n        metrics:\n          type: object\n          description: |\n            The journey\'s OWN declared metrics, evaluated live over this conversation.\n            There is no platform-wide notion of "qualified" to report instead.\n          additionalProperties:\n            oneOf:\n              - type: boolean\n              - type: number\n          example: { qualified_lead: true, booked: true, conversion: false, revenue: 0 }\n        completed:\n          type: boolean\n          example: true\n        escalated:\n          type: boolean\n          example: false\n        escalationRule:\n          type: string\n          nullable: true\n          description: The declared rule that fired, when one did.\n          example: evidence.budget_band == needs_financing\n        modelCost:\n          type: integer\n          minimum: 0\n          description: |\n            Metered from real token usage, in minor units of `currency`. Zero when running\n            without a model credential, which is a fact rather than an estimate.\n          example: 214\n        currency:\n          type: string\n          pattern: "^[A-Z]{3}$"\n          example: INR\n        offline:\n          type: boolean\n          description: |\n            True when no model credential is configured; a deterministic keyword extractor\n            is answering and the conversation quality is not representative.\n          example: true\n      example:\n        leadId: web_3f9a21c07b4e6d15\n        journey: mba-admissions-qualification\n        version: 5\n        turns:\n          - { role: agent, text: "Hi, I\'m an AI assistant from the admissions team.", at: "2026-09-05T09:14:02.117Z" }\n          - { role: lead, text: "Executive MBA, this intake", at: "2026-09-05T09:14:31.004Z" }\n        evidence:\n          - { field: target_program, required: true, value: executive_mba, confidence: 0.95, sensitive: false }\n          - { field: timeline, required: true, value: this_intake, confidence: 0.9, sensitive: false }\n          - { field: budget_band, required: true, value: null, confidence: null, sensitive: true }\n        missingRequired: [budget_band]\n        score: null\n        decision: null\n        metrics: { qualified_lead: false, booked: false, conversion: false, revenue: 0 }\n        completed: false\n        escalated: false\n        escalationRule: null\n        modelCost: 214\n        currency: INR\n        offline: false\n\n    ChatReply:\n      type: object\n      required: [reply, state]\n      additionalProperties: false\n      properties:\n        reply:\n          type: string\n          nullable: true\n          description: |\n            Null when the agent has nothing further to say \u2014 the conversation completed, or\n            a policy rule escalated it to a human.\n          example: Which programme are you considering?\n        state:\n          $ref: "#/components/schemas/ChatState"\n\n    LiveVersion:\n      type: object\n      required: [journey, version]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          example: 5\n        promotedAt:\n          type: string\n          format: date-time\n          description: Present on the response to a promotion.\n          example: "2026-09-05T18:22:41.006Z"\n      example:\n        journey: mba-admissions-qualification\n        version: 5\n\n    PromoteRequest:\n      type: object\n      required: [version]\n      additionalProperties: false\n      properties:\n        version:\n          type: integer\n          minimum: 1\n          description: A version that is already published.\n          example: 7\n      example:\n        version: 7\n\n    JourneySource:\n      type: object\n      required: [journey, version, yaml]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          example: 4\n        yaml:\n          type: string\n          example: "journey: mba-admissions-qualification\\nversion: 4\\n..."\n      example:\n        journey: mba-admissions-qualification\n        version: 4\n        yaml: "journey: mba-admissions-qualification\\nversion: 4\\n..."\n\n    DraftSpec:\n      type: object\n      required: [yaml]\n      additionalProperties: false\n      properties:\n        yaml:\n          type: string\n          description: The complete journey specification.\n          minLength: 1\n          maxLength: 40000\n          example: "journey: mba-admissions-qualification\\nversion: 6\\n..."\n      example:\n        yaml: "journey: mba-admissions-qualification\\nversion: 6\\n..."\n\n    DraftLintResult:\n      type: object\n      required: [valid, warnings]\n      additionalProperties: false\n      properties:\n        valid:\n          type: boolean\n          description: Whether the draft parses at all.\n          example: true\n        journey:\n          type: string\n          description: Present only when the draft parses.\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          description: Present only when the draft parses.\n          example: 6\n        error:\n          type: string\n          description: Present only when the draft does not parse.\n          maxLength: 500\n          example: routing needs exactly one "otherwise" rule, found 2\n        warnings:\n          type: array\n          items:\n            $ref: "#/components/schemas/SpecWarning"\n      example:\n        valid: true\n        journey: mba-admissions-qualification\n        version: 6\n        warnings: []\n\n    LintReport:\n      type: object\n      required: [journey, version, warnings]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          example: 4\n        warnings:\n          type: array\n          description: Empty when the version passes every check.\n          items:\n            $ref: "#/components/schemas/SpecWarning"\n      example:\n        journey: mba-admissions-qualification\n        version: 4\n        warnings:\n          - code: unreachable_qualification\n            message: required evidence can score at most 65, but qualifying needs 70. This journey cannot qualify anyone.\n\n    ReplayRequest:\n      type: object\n      required: [journey, a, b]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          minLength: 1\n          maxLength: 120\n          example: mba-admissions-qualification\n        a:\n          type: integer\n          minimum: 1\n          description: The baseline version.\n          example: 3\n        b:\n          type: integer\n          minimum: 1\n          description: The candidate version.\n          example: 4\n        n:\n          type: integer\n          minimum: 1\n          description: |\n            Cap the cohort to the first N leads. A cap is the difference between a screen\n            you can click and one that starts a six-figure token job.\n          example: 200\n        leadIds:\n          type: array\n          description: |\n            Which historical leads to replay. Omit to replay every lead on the journey.\n          items:\n            type: string\n            minLength: 1\n            maxLength: 64\n            example: L_meta_executive_528\n          example: [L_meta_executive_528, L_meta_executive_696]\n      example:\n        journey: mba-admissions-qualification\n        a: 3\n        b: 4\n\n    ReplayEstimate:\n      type: object\n      required: [available, leads, extracted, reused, estimatedUsd, modelled]\n      additionalProperties: false\n      properties:\n        available:\n          type: integer\n          minimum: 0\n          description: Leads on this journey in total.\n          example: 2000\n        leads:\n          type: integer\n          minimum: 0\n          description: Leads this replay would cover, after any cap.\n          example: 200\n        extracted:\n          type: integer\n          minimum: 0\n          description: Of those, how many need a model call. The only ones that cost.\n          example: 74\n        reused:\n          type: integer\n          minimum: 0\n          description: How many already carry their evidence on the record.\n          example: 126\n        estimatedUsd:\n          type: number\n          format: double\n          minimum: 0\n          description: From a measured per-extraction cost, not a guess.\n          example: 0.185\n        modelled:\n          type: boolean\n          description: |\n            False when no credential is configured, in which case the deterministic\n            extractor runs and the replay is free.\n          example: true\n      example:\n        available: 2000\n        leads: 200\n        extracted: 74\n        reused: 126\n        estimatedUsd: 0.185\n        modelled: true\n\n    ReplayCost:\n      type: object\n      description: |\n        What a replay actually cost. Replay writes no events \u2014 it is a read over history \u2014\n        so its spend appears in no `CostObserved` row and would otherwise be invisible.\n      required: [leads, extracted, reused, usd]\n      additionalProperties: false\n      properties:\n        leads: { type: integer, minimum: 0, example: 200 }\n        extracted: { type: integer, minimum: 0, example: 74 }\n        reused: { type: integer, minimum: 0, example: 126 }\n        usd: { type: number, format: double, minimum: 0, example: 0.1832 }\n      example:\n        leads: 200\n        extracted: 74\n        reused: 126\n        usd: 0.1832\n\n    ReplayArm:\n      type: object\n      description: One version\'s result over the replayed cohort.\n      required: [version, qualifiedRate, projectedConversions]\n      additionalProperties: false\n      properties:\n        version:\n          type: integer\n          minimum: 1\n          example: 4\n        qualifiedRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          description: Share of the cohort this version would have qualified.\n          example: 0.048\n        projectedConversions:\n          type: number\n          format: double\n          minimum: 0\n          description: |\n            MODELLED. Observed conversion rates per routing decision, applied to this\n            version\'s counterfactual routing. An estimate, never an observation.\n          example: 89.5\n      example:\n        version: 4\n        qualifiedRate: 0.048\n        projectedConversions: 89.5\n\n    ReplayOutcome:\n      type: object\n      description: What one version did with one lead.\n      required: [leadId, decision, qualified, turns]\n      additionalProperties: false\n      properties:\n        leadId:\n          type: string\n          minLength: 1\n          maxLength: 64\n          example: L_meta_executive_696\n        decision:\n          type: string\n          description: The routing decision, named by the journey\'s own routing block.\n          example: hot\n        qualified:\n          type: boolean\n          example: true\n        turns:\n          type: integer\n          minimum: 0\n          example: 6\n      example:\n        leadId: L_meta_executive_696\n        decision: hot\n        qualified: true\n        turns: 6\n\n    Divergence:\n      type: object\n      description: |\n        A lead the two versions treated differently. This list is the answer to\n        "show me where the new version actually changed something".\n      required: [leadId, a, b, actualOutcome]\n      additionalProperties: false\n      properties:\n        leadId:\n          type: string\n          minLength: 1\n          maxLength: 64\n          example: L_meta_executive_696\n        a:\n          $ref: "#/components/schemas/ReplayOutcome"\n        b:\n          $ref: "#/components/schemas/ReplayOutcome"\n        actualOutcome:\n          type: string\n          nullable: true\n          description: OBSERVED. What really happened to this lead, or null if nothing did.\n          example: paid\n      example:\n        leadId: L_meta_executive_696\n        a: { leadId: L_meta_executive_696, decision: warm, qualified: false, turns: 6 }\n        b: { leadId: L_meta_executive_696, decision: hot, qualified: true, turns: 6 }\n        actualOutcome: paid\n\n    Lift:\n      type: object\n      required:\n        [n, a, b, absoluteLift, ci95, observedConversionByDecision, divergent, cost]\n      additionalProperties: false\n      properties:\n        n:\n          type: integer\n          minimum: 0\n          description: Leads replayed.\n          example: 2000\n        a:\n          $ref: "#/components/schemas/ReplayArm"\n        b:\n          $ref: "#/components/schemas/ReplayArm"\n        absoluteLift:\n          type: number\n          format: double\n          description: b\'s qualification rate minus a\'s, in percentage points as a fraction.\n          example: 0.029\n        ci95:\n          $ref: "#/components/schemas/ConfidenceInterval"\n        observedConversionByDecision:\n          type: object\n          description: |\n            OBSERVED. Historical conversion rate for each routing decision, measured from\n            what really happened. This is the factual half of the response.\n          additionalProperties:\n            type: number\n            format: double\n            minimum: 0\n            maximum: 1\n          example: { hot: 0.361, warm: 0.138, cold: 0.008, escalated: 0.002 }\n        divergent:\n          type: array\n          items:\n            $ref: "#/components/schemas/Divergence"\n        cost:\n          $ref: "#/components/schemas/ReplayCost"\n      example:\n        n: 2000\n        a: { version: 3, qualifiedRate: 0.018, projectedConversions: 66.1 }\n        b: { version: 4, qualifiedRate: 0.048, projectedConversions: 89.5 }\n        absoluteLift: 0.029\n        ci95: [0.023, 0.038]\n        observedConversionByDecision: { hot: 0.361, warm: 0.138, cold: 0.008 }\n        divergent: []\n        cost: { leads: 200, extracted: 74, reused: 126, usd: 0.1832 }\n\n    ConfidenceInterval:\n      type: array\n      description: |\n        A 95% interval as `[low, high]`. Always reported. A point estimate with no\n        interval invites exactly the challenge it cannot survive.\n      minItems: 2\n      maxItems: 2\n      items:\n        type: number\n        format: double\n      example: [0.023, 0.038]\n\n    Limits:\n      type: object\n      required: [maxCohort, offline]\n      additionalProperties: false\n      properties:\n        maxCohort:\n          type: integer\n          minimum: 1\n          description: Largest simulated or compared cohort this deployment will run.\n          example: 60\n        offline:\n          type: boolean\n          description: |\n            True when no model credential is configured, so nothing here can spend.\n          example: false\n      example:\n        maxCohort: 60\n        offline: false\n\n    SimulateRequest:\n      type: object\n      required: [journey, version, n]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          minLength: 1\n          maxLength: 120\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          example: 4\n        n:\n          type: integer\n          minimum: 1\n          maximum: 2000\n          description: |\n            Personas to run. Capped so that one request cannot start a five-figure model\n            bill.\n          example: 500\n        seed:\n          type: integer\n          minimum: 0\n          description: |\n            Persona generation seed. The same seed produces the same cohort, so a result\n            on stage is the result from rehearsal.\n          default: 1\n          example: 1\n      example:\n        journey: mba-admissions-qualification\n        version: 4\n        n: 500\n\n    CompareRequest:\n      type: object\n      required: [journey, a, b, n]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          minLength: 1\n          maxLength: 120\n          example: mba-admissions-qualification\n        a:\n          type: integer\n          minimum: 1\n          example: 4\n        b:\n          type: integer\n          minimum: 1\n          example: 5\n        n:\n          type: integer\n          minimum: 1\n          maximum: 2000\n          example: 200\n        seed:\n          type: integer\n          minimum: 0\n          description: Used for both arms, which is what makes the comparison paired.\n          default: 1\n          example: 1\n      example:\n        journey: mba-admissions-qualification\n        a: 4\n        b: 5\n        n: 200\n\n    LeadOutcome:\n      type: object\n      description: One simulated conversation\'s result.\n      required: [leadId, completed, qualified, escalated, turns]\n      additionalProperties: true\n      properties:\n        leadId:\n          type: string\n          minLength: 1\n          maxLength: 64\n          example: sim_0f31c7\n        completed:\n          type: boolean\n          description: Whether required evidence was collected and the lead was routed.\n          example: true\n        qualified:\n          type: boolean\n          example: false\n        escalated:\n          type: boolean\n          description: Whether a declared `escalate_when` rule fired.\n          example: false\n        turns:\n          type: integer\n          minimum: 0\n          example: 8\n      example:\n        leadId: sim_0f31c7\n        completed: true\n        qualified: false\n        escalated: false\n        turns: 8\n\n    RunSummary:\n      type: object\n      required:\n        [runId, journey, journeyVersion, n, completed, qualified, escalated, ghosted, avgTurns, results]\n      additionalProperties: false\n      properties:\n        runId:\n          type: string\n          description: |\n            Groups every event this run wrote. All of them are `sim`-scoped, so no\n            live-scoped read can see them.\n          minLength: 1\n          maxLength: 64\n          example: run_9c2f1a\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        journeyVersion:\n          type: integer\n          minimum: 1\n          example: 4\n        n:\n          type: integer\n          minimum: 0\n          example: 500\n        completed:\n          type: integer\n          minimum: 0\n          example: 412\n        qualified:\n          type: integer\n          minimum: 0\n          example: 118\n        escalated:\n          type: integer\n          minimum: 0\n          example: 34\n        ghosted:\n          type: integer\n          minimum: 0\n          description: Personas that stopped replying.\n          example: 54\n        avgTurns:\n          type: number\n          format: double\n          minimum: 0\n          example: 6.4\n        results:\n          type: array\n          items:\n            $ref: "#/components/schemas/LeadOutcome"\n      example:\n        runId: run_9c2f1a\n        journey: mba-admissions-qualification\n        journeyVersion: 4\n        n: 500\n        completed: 412\n        qualified: 118\n        escalated: 34\n        ghosted: 54\n        avgTurns: 6.4\n        results: []\n\n    RunQuality:\n      type: object\n      description: |\n        Aggregate scorecard over a run. Completeness and correctness are deterministic\n        checks against each persona\'s ground truth; the judge scores only what a regex\n        cannot.\n      required:\n        [n, meanCompleteness, meanCorrectness, violationRate, hallucinationRate, ghostRate, escalationRate, qualifiedRate, meanTurns]\n      additionalProperties: false\n      properties:\n        n:\n          type: integer\n          minimum: 0\n          example: 500\n        meanCompleteness:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          description: Share of required evidence fields actually collected.\n          example: 0.86\n        meanCorrectness:\n          type: number\n          format: double\n          nullable: true\n          minimum: 0\n          maximum: 1\n          description: |\n            Share of extracted values that matched the persona\'s ground truth. Null when\n            no persona carried ground truth to check against.\n          example: 0.94\n        violationRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          description: Share of conversations that breached a declared `never` rule.\n          example: 0.004\n        hallucinationRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          example: 0.01\n        ghostRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          example: 0.108\n        escalationRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          example: 0.068\n        qualifiedRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          example: 0.236\n        meanTurns:\n          type: number\n          format: double\n          minimum: 0\n          example: 6.4\n      example:\n        n: 500\n        meanCompleteness: 0.86\n        meanCorrectness: 0.94\n        violationRate: 0.004\n        hallucinationRate: 0.01\n        ghostRate: 0.108\n        escalationRate: 0.068\n        qualifiedRate: 0.236\n        meanTurns: 6.4\n\n    Alert:\n      type: object\n      description: A declared threshold that a run crossed.\n      required: [id, severity, message, observed, threshold]\n      additionalProperties: false\n      properties:\n        id:\n          type: string\n          minLength: 1\n          maxLength: 60\n          example: policy_violations\n        severity:\n          type: string\n          enum: [warn, critical]\n          description: |\n            Policy breaches and evidence correctness are critical; ghosting is a warning,\n            because a lead who stops replying is often the lead\'s own choice whereas a\n            policy breach is always the agent\'s fault.\n          example: critical\n        message:\n          type: string\n          minLength: 1\n          maxLength: 300\n          example: 4.2% of conversations breached a "never" rule\n        observed:\n          type: number\n          format: double\n          example: 0.042\n        threshold:\n          type: number\n          format: double\n          example: 0.01\n      example:\n        id: policy_violations\n        severity: critical\n        message: 4.2% of conversations breached a "never" rule\n        observed: 0.042\n        threshold: 0.01\n\n    SimulationResult:\n      type: object\n      required: [summary, quality, alerts]\n      additionalProperties: false\n      properties:\n        summary:\n          $ref: "#/components/schemas/RunSummary"\n        quality:\n          $ref: "#/components/schemas/RunQuality"\n        alerts:\n          type: array\n          description: Empty when the run cleared every threshold.\n          items:\n            $ref: "#/components/schemas/Alert"\n      example:\n        summary:\n          runId: run_9c2f1a\n          journey: mba-admissions-qualification\n          journeyVersion: 4\n          n: 500\n          completed: 412\n          qualified: 118\n          escalated: 34\n          ghosted: 54\n          avgTurns: 6.4\n          results: []\n        quality:\n          n: 500\n          meanCompleteness: 0.86\n          meanCorrectness: 0.94\n          violationRate: 0.004\n          hallucinationRate: 0.01\n          ghostRate: 0.108\n          escalationRate: 0.068\n          qualifiedRate: 0.236\n          meanTurns: 6.4\n        alerts: []\n\n    ArmResult:\n      type: object\n      description: One side of an A/B comparison.\n      required: [target, summary, quality]\n      additionalProperties: false\n      properties:\n        target:\n          type: string\n          description: |\n            What this arm was pointed at. The same allocator that splits simulated cohorts\n            later points at a parallel-run cohort, so adoption needs no new machinery.\n          minLength: 1\n          maxLength: 120\n          example: v4\n        summary:\n          $ref: "#/components/schemas/RunSummary"\n        quality:\n          $ref: "#/components/schemas/RunQuality"\n\n    Scoreboard:\n      type: object\n      required:\n        [a, b, qualifiedDelta, qualifiedCi95, completenessDelta, correctnessDelta, verdict]\n      additionalProperties: false\n      properties:\n        a:\n          $ref: "#/components/schemas/ArmResult"\n        b:\n          $ref: "#/components/schemas/ArmResult"\n        qualifiedDelta:\n          type: number\n          format: double\n          description: b\'s qualification rate minus a\'s.\n          example: 0.031\n        qualifiedCi95:\n          $ref: "#/components/schemas/ConfidenceInterval"\n        completenessDelta:\n          type: number\n          format: double\n          example: 0.04\n        correctnessDelta:\n          type: number\n          format: double\n          nullable: true\n          example: 0.01\n        verdict:\n          type: string\n          enum: [b_better, a_better, inconclusive]\n          description: |\n            `inconclusive` whenever the interval spans zero. That is a result \u2014 the data\n            does not support a decision \u2014 not an error.\n          example: b_better\n\n    Totals:\n      type: object\n      description: |\n        Aggregate figures for one node of the attribution tree, or for the whole report.\n        Metric names come from the tenant\'s own `metrics:` block, so `counts` and `sums`\n        are keyed by names this platform did not choose.\n      required:\n        [leads, counts, sums, mediaCost, modelCost, totalCost, costPer, returnOnSpend]\n      additionalProperties: false\n      properties:\n        leads:\n          type: integer\n          minimum: 0\n          example: 2000\n        counts:\n          type: object\n          description: For each boolean metric, the number of leads it held for.\n          additionalProperties:\n            type: integer\n            minimum: 0\n          example: { qualified_lead: 80, booked: 80, conversion: 66 }\n        sums:\n          type: object\n          description: |\n            For each aggregate metric, its sum over leads. Monetary metrics are integer\n            minor units.\n          additionalProperties:\n            type: number\n          example: { revenue: 297000000 }\n        mediaCost:\n          type: integer\n          minimum: 0\n          description: MODELLED. Ad spend allocated to leads. Minor units.\n          example: 74900000\n        modelCost:\n          type: integer\n          minimum: 0\n          description: |\n            OBSERVED. Metered from real token usage and converted at write time with the\n            rate recorded in the event. Minor units.\n          example: 0\n        totalCost:\n          type: integer\n          minimum: 0\n          example: 74900000\n        costPer:\n          type: object\n          description: |\n            Total cost divided by the count of each boolean metric. **Null when the count\n            is zero** \u2014 an undefined ratio, not an infinite one.\n          additionalProperties:\n            type: number\n            nullable: true\n          example: { qualified_lead: 936250, conversion: 1134848 }\n        returnOnSpend:\n          type: object\n          description: |\n            Each aggregate metric divided by total cost. Null when nothing was spent.\n          additionalProperties:\n            type: number\n            nullable: true\n          example: { revenue: 39.7 }\n\n    AttributionNode:\n      type: object\n      description: |\n        One level of campaign to creative to journey version. A lead is attributed to the\n        version that produced its routing decision \u2014 the version that actually did the\n        work \u2014 falling back to the version it was ingested under.\n      required: [dimension, value, children, leads, counts, sums, mediaCost, modelCost, totalCost, costPer, returnOnSpend]\n      additionalProperties: false\n      allOf:\n        - $ref: "#/components/schemas/Totals"\n        - type: object\n          properties:\n            dimension:\n              type: string\n              enum: [campaign, creative, version]\n              example: campaign\n            value:\n              type: string\n              description: |\n                The campaign id, creative id, or version number as a string. Leads with no\n                campaign are grouped as `(unattributed)`.\n              minLength: 1\n              maxLength: 120\n              example: meta_scholarships\n            children:\n              type: array\n              description: The next level down. Empty at the version level.\n              items:\n                $ref: "#/components/schemas/AttributionNode"\n      example:\n        dimension: campaign\n        value: meta_scholarships\n        leads: 900\n        counts: { qualified_lead: 22, booked: 22, conversion: 20 }\n        sums: { revenue: 90000000 }\n        mediaCost: 13500000\n        modelCost: 0\n        totalCost: 13500000\n        costPer: { conversion: 675000 }\n        returnOnSpend: { revenue: 66.7 }\n        children:\n          - dimension: creative\n            value: cr_fees\n            leads: 450\n            counts: { qualified_lead: 13, booked: 13, conversion: 14 }\n            sums: { revenue: 63000000 }\n            mediaCost: 6750000\n            modelCost: 0\n            totalCost: 6750000\n            costPer: { conversion: 482142 }\n            returnOnSpend: { revenue: 93.3 }\n            children: []\n\n    AttributionReport:\n      type: object\n      required: [journey, currency, metricKinds, total, tree, caveats]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        currency:\n          type: string\n          pattern: "^[A-Z]{3}$"\n          example: INR\n        metricKinds:\n          type: object\n          description: |\n            Which declared metrics are counted and which are summed. The distinction is\n            load-bearing: a boolean metric aggregates as a count of leads, an aggregate\n            metric as a sum over them.\n          required: [booleans, aggregates]\n          additionalProperties: false\n          properties:\n            booleans:\n              type: array\n              items:\n                type: string\n                example: conversion\n              example: [qualified_lead, booked, conversion]\n            aggregates:\n              type: array\n              items:\n                type: string\n                example: revenue\n              example: [revenue]\n          example:\n            booleans: [qualified_lead, booked, conversion]\n            aggregates: [revenue]\n        total:\n          $ref: "#/components/schemas/Totals"\n        tree:\n          type: array\n          items:\n            $ref: "#/components/schemas/AttributionNode"\n        caveats:\n          type: array\n          description: |\n            Assumptions a customer is entitled to see beside the numbers \u2014 the allocation\n            method, leads with no campaign, leads with no spend ingested, and any metric\n            whose definition drifted between versions present in the data.\n          items:\n            type: string\n            example: Media spend is allocated evenly across the leads a campaign produced that day.\n          example:\n            - Media spend is allocated evenly across the leads a campaign produced that day. A weighted model is a customer decision, not a default.\n      example:\n        journey: mba-admissions-qualification\n        currency: INR\n        metricKinds:\n          booleans: [qualified_lead, booked, conversion]\n          aggregates: [revenue]\n        total:\n          leads: 2000\n          counts: { qualified_lead: 80, booked: 80, conversion: 66 }\n          sums: { revenue: 297000000 }\n          mediaCost: 74900000\n          modelCost: 0\n          totalCost: 74900000\n          costPer: { conversion: 1134848 }\n          returnOnSpend: { revenue: 39.7 }\n        tree: []\n        caveats:\n          - Media spend is allocated evenly across the leads a campaign produced that day.\n\n    Finding:\n      type: object\n      description: One thing worth telling a marketer, with the evidence for it attached.\n      required: [code, severity, claim, detail, n, effect, evidence]\n      additionalProperties: false\n      properties:\n        code:\n          type: string\n          enum:\n            [evidence_bottleneck, segment_divergence, drop_off, routing_miscalibration, timing, policy_friction, version_regression]\n          example: segment_divergence\n        severity:\n          type: string\n          enum: [high, medium, low]\n          example: medium\n        claim:\n          type: string\n          description: One sentence a marketer can read without translation.\n          minLength: 1\n          maxLength: 400\n          example: evidence.budget_band = needs_financing converts 8.6% worse than the rest of the cohort.\n        detail:\n          type: string\n          description: The numbers behind the claim.\n          minLength: 1\n          maxLength: 500\n          example: 0.2% vs 8.7% (n=509 / 743), 95% CI -10.6% .. -6.5%\n        n:\n          type: integer\n          minimum: 0\n          description: Support. A finding without it is an anecdote.\n          example: 1252\n        effect:\n          type: number\n          format: double\n          minimum: 0\n          description: Magnitude, used for ranking. Absolute difference in rates.\n          example: 0.086\n        ci95:\n          $ref: "#/components/schemas/ConfidenceInterval"\n        suggestion:\n          type: string\n          description: What to change in the spec, when there is a defensible answer.\n          maxLength: 400\n          example: Branch on evidence.budget_band = needs_financing rather than routing it on the shared score.\n        evidence:\n          type: object\n          description: Machine-readable backing for the claim, shaped per finding type.\n          additionalProperties: true\n          example:\n            dimension: evidence.budget_band\n            value: needs_financing\n            cohortRate: 0.002\n            baselineRate: 0.087\n            cohortSize: 509\n\n    InsightReport:\n      type: object\n      required: [journey, leadsAnalysed, findings, skipped]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        leadsAnalysed:\n          type: integer\n          minimum: 0\n          example: 2000\n        findings:\n          type: array\n          description: Ranked by severity, then by effect size.\n          items:\n            $ref: "#/components/schemas/Finding"\n        skipped:\n          type: array\n          description: |\n            Detectors that could not run, and why. Present so that silence is never\n            mistaken for a clean bill of health.\n          items:\n            type: object\n            required: [code, reason]\n            additionalProperties: false\n            properties:\n              code:\n                type: string\n                example: version_regression\n              reason:\n                type: string\n                minLength: 1\n                maxLength: 400\n                example: only one journey version in scope\n          example:\n            - code: version_regression\n              reason: only one journey version in scope\n      example:\n        journey: mba-admissions-qualification\n        leadsAnalysed: 2000\n        findings:\n          - code: segment_divergence\n            severity: medium\n            claim: evidence.budget_band = needs_financing converts 8.6% worse than the rest of the cohort.\n            detail: 0.2% vs 8.7% (n=509 / 743), 95% CI -10.6% .. -6.5%\n            n: 1252\n            effect: 0.086\n            ci95: [-0.106, -0.065]\n            suggestion: Branch on evidence.budget_band = needs_financing rather than routing it on the shared score.\n            evidence: { dimension: evidence.budget_band, value: needs_financing }\n        skipped:\n          - code: version_regression\n            reason: only one journey version in scope\n\n    CopilotRequest:\n      type: object\n      required: [journey, question]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          description: |\n            The journey in scope. Fixed by the caller, never chosen by the model \u2014 a\n            copilot that can retarget its own scope is a tenancy hole.\n          minLength: 1\n          maxLength: 120\n          example: mba-admissions-qualification\n        question:\n          type: string\n          minLength: 1\n          maxLength: 500\n          description: A question long enough to be an essay is a paste, not a question.\n          example: Why is my needs_financing cohort converting worse?\n      example:\n        journey: mba-admissions-qualification\n        question: Why is my needs_financing cohort converting worse?\n\n    ViewSeriesPoint:\n      type: object\n      required: [label, value]\n      additionalProperties: false\n      properties:\n        label:\n          type: string\n          minLength: 1\n          maxLength: 120\n          example: needs_financing (n=509)\n        value:\n          type: number\n          format: double\n          example: 0.2\n        band:\n          type: string\n          enum: [observed, modelled]\n          description: |\n            Drives the colouring that keeps measured and estimated numbers visually\n            distinct.\n          example: observed\n\n    View:\n      type: object\n      description: |\n        A rendering descriptor chosen from a closed set. The model never emits markup \u2014\n        HTML from a model into the console DOM would be an XSS hole \u2014 so the console owns\n        how this looks and there is nothing here to sanitise.\n      required: [kind, title]\n      additionalProperties: false\n      properties:\n        kind:\n          type: string\n          enum: [bar, table, stat]\n          example: bar\n        title:\n          type: string\n          minLength: 1\n          maxLength: 160\n          example: Conversion by evidence.budget_band\n        unit:\n          type: string\n          maxLength: 12\n          description: Appended to each value. Bar views only.\n          example: "%"\n        series:\n          type: array\n          description: Bar views only.\n          items:\n            $ref: "#/components/schemas/ViewSeriesPoint"\n        columns:\n          type: array\n          description: Table views only.\n          items:\n            type: string\n            example: campaign\n          example: [campaign, leads, converted]\n        rows:\n          type: array\n          description: Table views only.\n          items:\n            type: array\n            items:\n              type: string\n              nullable: true\n          example: [[meta_scholarships, "900", "20"]]\n        value:\n          type: string\n          description: Stat views only.\n          maxLength: 60\n          example: "\u20B911,348"\n        caption:\n          type: string\n          description: Stat views only.\n          maxLength: 160\n          example: cost per enrolment\n      example:\n        kind: bar\n        title: Conversion by evidence.budget_band\n        unit: "%"\n        series:\n          - { label: "needs_financing (n=509)", value: 0.2, band: observed }\n          - { label: "5L_to_15L (n=375)", value: 9.1, band: observed }\n          - { label: "above_15L (n=368)", value: 8.4, band: observed }\n\n    SpecWarning:\n      type: object\n      description: |\n        A lint warning that travels with a proposal rather than being swallowed. A warning\n        hidden here is a warning nobody acts on.\n      required: [code, message]\n      additionalProperties: false\n      properties:\n        code:\n          type: string\n          enum:\n            [unreachable_qualification, unknown_scoring_field, unreachable_weight, unparseable_metric, unreachable_metric]\n          example: unreachable_qualification\n        message:\n          type: string\n          minLength: 1\n          maxLength: 500\n          example: required evidence can score at most 65, but qualifying needs 70.\n\n    ProposedDiff:\n      type: object\n      description: |\n        A proposed new journey version. Already parsed, linted and diffed before it\n        reached this response, so it would publish as it stands. Nothing has been\n        published.\n      required: [journey, fromVersion, toVersion, rationale, yaml, changes, warnings]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        fromVersion:\n          type: integer\n          minimum: 1\n          example: 5\n        toVersion:\n          type: integer\n          minimum: 2\n          description: Always greater than `fromVersion`; a proposal must bump.\n          example: 6\n        rationale:\n          type: string\n          description: One sentence tying the change to the data that motivated it.\n          minLength: 1\n          maxLength: 400\n          example: budget_band = needs_financing converts 8.6% worse on the shared score; give it its own branch instead.\n        yaml:\n          type: string\n          description: The full proposed spec, ready to publish.\n          minLength: 1\n          example: "journey: mba-admissions-qualification\\nversion: 6\\n..."\n        changes:\n          type: array\n          items:\n            $ref: "#/components/schemas/SpecChange"\n        warnings:\n          type: array\n          items:\n            $ref: "#/components/schemas/SpecWarning"\n      example:\n        journey: mba-admissions-qualification\n        fromVersion: 5\n        toVersion: 6\n        rationale: budget_band = needs_financing converts 8.6% worse on the shared score; give it its own branch instead.\n        yaml: "journey: mba-admissions-qualification\\nversion: 6\\n..."\n        changes:\n          - path: routing.needs_financing_branch\n            kind: added\n            after:\n              when: evidence.budget_band == needs_financing\n              target: nurture.needs_financing_branch\n        warnings: []\n\n    CopilotAnswer:\n      type: object\n      required: [text, usedTools, offline]\n      additionalProperties: false\n      properties:\n        text:\n          type: string\n          minLength: 1\n          maxLength: 2000\n          example: evidence.budget_band = needs_financing converts 8.6% worse than the rest of the cohort.\n        view:\n          $ref: "#/components/schemas/View"\n        diff:\n          $ref: "#/components/schemas/ProposedDiff"\n        usedTools:\n          type: array\n          description: |\n            Which read models backed the answer. The audit trail for every number in it.\n          items:\n            type: string\n            enum: [roi, insights, cohort, read_spec, propose_diff]\n            example: insights\n          example: [insights, cohort, read_spec, propose_diff]\n        offline:\n          type: boolean\n          description: |\n            True when no model credential was configured and the answer came from keyword\n            routing over the same tools. The data is real either way; the reasoning is not.\n          example: true\n';
+var OPENAPI_YAML = 'openapi: 3.0.3\n\ninfo:\n  title: E2 API\n  version: 0.3.0\n  description: |\n    The read and control surface over the event spine.\n\n    **The one idea to hold on to:** there is a single append-only `events` table, and\n    every number this API returns is a *fold* over it. Replay, the A/B scoreboard, the\n    ROI report and the copilot all read the same log through the same predicates, which\n    is why they cannot disagree with each other. There is no separate analytics pipeline\n    to fall out of sync, and nothing here is precomputed.\n\n    A second idea that explains several response shapes: the log records **observable\n    facts only**. There is deliberately no `Converted` event, because "converted" means\n    different things to marketing, to sales and to finance. Each tenant declares its own\n    named metrics as predicates over the facts (`metrics:` in the journey spec), so\n    responses report metric *names the tenant chose* rather than a fixed vocabulary.\n\n    Money is always an **integer in minor units** \u2014 paise for INR, cents for USD. Never a\n    float, anywhere.\n  contact:\n    name: Platform team\n    email: fde@engati.com\n  license:\n    name: Proprietary\n\nservers:\n  - url: http://localhost:3000\n    description: Local development\n  - url: https://api.e2.example.com\n    description: Production\n\nsecurity:\n  - bearerAuth: []\n\ntags:\n  - name: Journeys\n    description: The declarative journey specifications and their versions.\n  - name: Replay\n    description: Counterfactual replay of historical leads through a different version.\n  - name: Simulation\n    description: Synthetic cohorts against a version, before any real lead is touched.\n  - name: Chat\n    description: Live conversations between a person and a published agent.\n  - name: Intelligence\n    description: ROI attribution, findings, and the copilot.\n  - name: Operations\n    description: Health and API discovery.\n\npaths:\n  /health:\n    get:\n      operationId: getHealth\n      tags: [Operations]\n      summary: Liveness probe\n      description: |\n        Answers without authentication so a load balancer can probe it. It reports that\n        the process is up; it does not check the database.\n      security: []\n      responses:\n        "200":\n          description: The process is running.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/HealthStatus"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/health:\n    get:\n      operationId: getHealthViaApi\n      tags: [Operations]\n      summary: Liveness probe, under the API prefix\n      description: |\n        Identical to `/health`. Both exist because a host that routes everything under\n        `/api` to a single function cannot reach a path outside that prefix, and a load\n        balancer conventionally probes the bare one.\n      security: []\n      responses:\n        "200":\n          description: The process is running.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/HealthStatus"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/openapi.json:\n    get:\n      operationId: getOpenApiDocument\n      tags: [Operations]\n      summary: This document\n      description: |\n        The API surface as JSON, unauthenticated so a client can discover it before it\n        has a credential. A test asserts that every route the server registers appears\n        here and vice versa, so this document cannot drift away from the running code.\n      security: []\n      responses:\n        "200":\n          description: The OpenAPI 3.0 document.\n          content:\n            application/json:\n              schema:\n                type: object\n                description: An OpenAPI 3.0 document.\n                additionalProperties: true\n                example: { openapi: "3.0.3" }\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/openapi.yaml:\n    get:\n      operationId: getOpenApiDocumentAsYaml\n      tags: [Operations]\n      summary: This document, as YAML\n      description: |\n        Byte-for-byte the authored source of this specification. The JSON form is parsed\n        from it, so the two cannot disagree.\n      security: []\n      responses:\n        "200":\n          description: The OpenAPI 3.0 document as YAML.\n          content:\n            application/yaml:\n              schema:\n                type: string\n                description: An OpenAPI 3.0 document in YAML.\n                example: "openapi: 3.0.3"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/versions:\n    get:\n      operationId: listJourneyVersions\n      tags: [Journeys]\n      summary: List the published versions of a journey\n      description: |\n        Newest first. Versions are immutable once published: a change is always a new\n        version, which is what lets lift be attributed to a specific edit.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n      responses:\n        "200":\n          description: The published version numbers, newest first.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/JourneyVersionList"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/diff:\n    get:\n      operationId: diffJourneyVersions\n      tags: [Journeys]\n      summary: Structural diff between two versions\n      description: |\n        A characterisable, path-level diff \u2014 `evidence.decision_maker.required` went from\n        `false` to `true`. This is what makes an A/B result actionable: you can attribute\n        lift to a named change. A journey written as a prose prompt cannot be diffed this\n        way, which is the concrete reason this platform declares journeys instead.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/VersionA"\n        - $ref: "#/components/parameters/VersionB"\n      responses:\n        "200":\n          description: Every path that differs between the two versions.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/SpecDiff"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/live:\n    get:\n      operationId: getLiveVersion\n      tags: [Journeys]\n      summary: Which version answers by default\n      description: |\n        Distinct from the newest published version, and that distinction is the point:\n        publishing makes a version exist so it can be tried, promoting makes it the one\n        real traffic meets. A chat session with no version named gets this one.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n      responses:\n        "200":\n          description: The live version.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/LiveVersion"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/promote:\n    post:\n      operationId: promoteJourneyVersion\n      tags: [Journeys]\n      summary: Point default traffic at a published version\n      description: |\n        Shipping, as a separate act from publishing. The version must already be\n        published; this only moves the pointer, so it is instant and reversible \u2014 promote\n        the previous version back and traffic returns to it on the next session.\n\n        Sessions already in flight keep the version they started on. A conversation whose\n        agent changed mid-way would be neither version\'s result.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/PromoteRequest"\n      responses:\n        "200":\n          description: Promoted. New sessions get this version.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/LiveVersion"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/source:\n    get:\n      operationId: getJourneySource\n      tags: [Journeys]\n      summary: The authored YAML for a version\n      description: |\n        Byte for byte as it was published. Key order in the source is load-bearing \u2014\n        routing is first-match-wins, and a spec round-tripped through JSON comes back with\n        its rules reordered \u2014 so the editor loads this rather than a re-serialised spec.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/JourneyVersion"\n      responses:\n        "200":\n          description: The version and its source.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/JourneySource"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/lint:\n    post:\n      operationId: lintDraftJourney\n      tags: [Journeys]\n      summary: Check YAML that has not been published yet\n      description: |\n        The editor\'s companion: it checks a draft while someone is still typing, so a\n        problem surfaces before publishing rather than after.\n\n        **YAML that does not parse returns 200 with `valid: false`**, not an error status.\n        A malformed draft is an expected state of an editor, and the caller needs the\n        message to display, not a failed request.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/DraftSpec"\n      responses:\n        "200":\n          description: Whether it parses, and every warning against it.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/DraftLintResult"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/publish:\n    post:\n      operationId: publishJourneyVersion\n      tags: [Journeys]\n      summary: Publish a new journey version\n      description: |\n        **Publishing is deployment.** There is no separate deploy step: from the moment\n        this returns, a new chat session can be served by this version, and a traffic\n        split can send it real leads.\n\n        Versions are immutable. Republishing a version number that exists returns 409 \u2014\n        bump the version instead. That immutability is what makes lift attributable to a\n        named change rather than to "the prompt at some point last month".\n\n        Lint warnings are returned with the published version rather than blocking it: a\n        spec may legitimately rely on optional evidence a lead volunteers, and the platform\n        should not be the judge of that.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/DraftSpec"\n      responses:\n        "200":\n          description: Published, and live for new conversations.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/LintReport"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "409":\n          description: That version number is already published, and versions are immutable.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/Error"\n              example:\n                error: mba-admissions-qualification v5 is already published; versions are immutable\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/lint:\n    get:\n      operationId: lintJourneyVersion\n      tags: [Journeys]\n      summary: Static checks against a journey version\n      description: |\n        Catches journeys that cannot do what they claim, before a single lead meets them.\n\n        The check that motivated this endpoint: a journey whose *required* evidence can\n        never reach its own qualifying threshold will qualify nobody, and the symptom \u2014\n        a simulation run reporting 0% qualified \u2014 looks like broken software rather than\n        a broken spec. It also flags scoring weights on fields that do not exist, metrics\n        that do not parse, and a booking metric in a journey whose routing never hands off.\n\n        These are warnings, not errors: a spec may legitimately rely on optional evidence\n        a lead volunteers. Omit `version` for the latest.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/JourneyVersion"\n      responses:\n        "200":\n          description: The version checked, and every warning against it.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/LintReport"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/replay-estimate:\n    get:\n      operationId: estimateReplayCost\n      tags: [Replay]\n      summary: What a replay would cost, before committing to it\n      description: |\n        Opening a replay screen used to fire the full job on mount \u2014 thousands of leads,\n        hundreds of model calls, real money, no warning. Nothing that can spend should\n        start without someone choosing to, so this answers the question first.\n\n        Only leads whose evidence is **not already on the record** cost anything. A lead\n        the journey has already run carries its `EvidenceExtracted` events, and re-deriving\n        them from the same transcript would pay a model call to reproduce a recorded fact.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/VersionA"\n        - $ref: "#/components/parameters/VersionB"\n        - $ref: "#/components/parameters/CohortSize"\n      responses:\n        "200":\n          description: How many leads, how many need extraction, and what that costs.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/ReplayEstimate"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/replay:\n    post:\n      operationId: replayCohort\n      tags: [Replay]\n      summary: Replay historical leads through a different journey version\n      description: |\n        Takes leads that already happened and asks what a different version would have\n        done with them. Returns the qualification lift with a 95% confidence interval and\n        the conversations where the two versions diverged.\n\n        **Read the two number families separately.** `observedConversionByDecision` is\n        measured from history and is a fact. `projectedConversions` applies those observed\n        rates to counterfactual routing and is a model. Presenting them as one number is\n        the fastest way to lose a room, so the API keeps them in separate fields and the\n        console renders them in different colours.\n\n        Omit `leadIds` to replay every lead on the journey.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/ReplayRequest"\n      responses:\n        "200":\n          description: The lift, its interval, and the divergent conversations.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/Lift"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/limits:\n    get:\n      operationId: getLimits\n      tags: [Operations]\n      summary: What this deployment will accept\n      description: |\n        A limit the client cannot see is a limit the client will exceed. Cohort sizes\n        differ by host \u2014 a serverless function has a wall-clock ceiling that a long-lived\n        server does not \u2014 so the console reads the ceiling rather than hardcoding a size\n        the host will then kill mid-run.\n      responses:\n        "200":\n          description: The deployment\'s operating limits.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/Limits"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/simulate:\n    post:\n      operationId: simulateCohort\n      tags: [Simulation]\n      summary: Run a synthetic cohort against a journey version\n      description: |\n        Generates `n` personas, runs each through the version end to end, and scores the\n        conversations. Everything it writes is `sim`-scoped and carries a `runId`, so no\n        live-scoped read can ever see it.\n\n        This is how a new version is checked before a real lead meets it. Alerts fire on\n        declared thresholds \u2014 a policy breach or an evidence-collection drop \u2014 so a bad\n        version is caught here rather than in production.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/SimulateRequest"\n      responses:\n        "200":\n          description: Run summary, aggregate quality, and any alerts that fired.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/SimulationResult"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/compare:\n    post:\n      operationId: compareJourneyVersions\n      tags: [Simulation]\n      summary: A/B two journey versions over one simulated cohort\n      description: |\n        Runs both versions against the **same seeded personas**, which is what makes the\n        comparison paired and the confidence interval honest. An unpaired interval over\n        two independently drawn cohorts would overstate the uncertainty and hide real\n        differences.\n\n        `verdict` is `inconclusive` whenever the interval spans zero. That is a result,\n        not a failure: it means the data does not support a decision yet.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/CompareRequest"\n      responses:\n        "200":\n          description: Both arms, the deltas, and the verdict.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/Scoreboard"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/roi:\n    get:\n      operationId: getAttributionReport\n      tags: [Intelligence]\n      summary: Cost and outcomes attributed campaign to creative to journey version\n      description: |\n        A fold over the event log producing spend, outcome counts and cost per outcome at\n        each level of the hierarchy.\n\n        Two things to know before quoting a number from this endpoint:\n\n        1. **Each lead is evaluated under the metric definitions of the version it ran\n           under**, not the latest spec. Otherwise editing `conversion:` would silently\n           rewrite last quarter. When definitions drifted across versions present in the\n           data, `caveats` says the column sums two different questions.\n        2. **Media spend is allocated, not observed.** Ad platforms report per campaign\n           per day; the spine needs a lead on every event. Allocation is even, the method\n           travels in each `CostObserved` payload, and `caveats` states it. Model spend,\n           by contrast, is metered from real token usage.\n\n        `costPer` is `null` rather than infinity when nothing converted \u2014 an undefined\n        ratio, not an enormous one.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/ReportingCurrency"\n      responses:\n        "200":\n          description: Totals, the attribution tree, and the assumptions behind them.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/AttributionReport"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/journeys/{journey}/insights:\n    get:\n      operationId: listInsights\n      tags: [Intelligence]\n      summary: Ranked findings about a journey\n      description: |\n        Seven detectors run over the folded log: evidence bottleneck, segment divergence,\n        drop-off, routing miscalibration, timing, policy friction and version regression.\n\n        Every finding carries its support (`n`), and every comparison carries a 95%\n        confidence interval. **A finding whose interval spans zero is not emitted**, and\n        neither is one below thirty leads on either side \u2014 noise shown to a marketer costs\n        the credibility the real findings then need. The one exception is routing\n        miscalibration, where "hot and cold are indistinguishable" *is* the finding.\n\n        `skipped` names the detectors that could not run and why. A detector that silently\n        returns nothing reads as a clean bill of health, which is the opposite of the\n        truth when the reason is that no policy event exists yet.\n      parameters:\n        - $ref: "#/components/parameters/JourneyName"\n        - $ref: "#/components/parameters/ConversionMetric"\n        - $ref: "#/components/parameters/QualifiedMetric"\n      responses:\n        "200":\n          description: Findings ranked by severity then effect size.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/InsightReport"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/chat/sessions:\n    post:\n      operationId: startChatSession\n      tags: [Chat]\n      summary: Begin a conversation with a published agent\n      description: |\n        A session is a lead. Everything it writes is `live`-scoped with no `runId`, so the\n        conversation lands in the same log the ROI and insight screens already read \u2014 a\n        real conversation is not a special case here, it is the ordinary case.\n\n        The first agent turn is **pinned and deterministic**, never a model call, so the\n        AI disclosure a person sees first cannot be improvised.\n\n        Pass `version` to talk to a specific one. Pass `split` instead \u2014 `{"4": 50, "5":\n        50}` \u2014 and the traffic allocator assigns deterministically, which is how a new\n        agent takes real traffic without disturbing the one already running. Pass neither\n        and the latest published version answers.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/StartChatRequest"\n      responses:\n        "200":\n          description: The opening turn and the conversation\'s state.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/ChatReply"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/chat/sessions/{leadId}/messages:\n    post:\n      operationId: sendChatMessage\n      tags: [Chat]\n      summary: Say something, and get the agent\'s reply\n      description: |\n        One runtime step, persisted. Evidence extracted this turn, any score and route it\n        produced, and the tokens it cost are all written before this returns \u2014 cost per\n        turn rather than per conversation, because a conversation someone abandons still\n        cost real money and still belongs in cost per outcome.\n\n        `reply` is null when the agent has nothing left to say: the conversation completed,\n        or a policy rule escalated it to a human.\n      parameters:\n        - $ref: "#/components/parameters/LeadId"\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/ChatMessageRequest"\n      responses:\n        "200":\n          description: The agent\'s reply and the updated state.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/ChatReply"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/chat/sessions/{leadId}:\n    get:\n      operationId: getChatSession\n      tags: [Chat]\n      summary: The full state of a conversation\n      description: |\n        Folded from the event log rather than held in memory, so a session survives a\n        restart and two clients watching the same conversation cannot disagree.\n      parameters:\n        - $ref: "#/components/parameters/LeadId"\n      responses:\n        "200":\n          description: The conversation and everything derived from it.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/ChatState"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\n  /api/copilot/ask:\n    post:\n      operationId: askCopilot\n      tags: [Intelligence]\n      summary: Ask a question about a journey, in words\n      description: |\n        The copilot reads through the same folds these endpoints expose \u2014 never raw SQL,\n        which from a model is both an injection surface and a hallucination surface. It\n        therefore cannot report a number the ROI endpoint disagrees with.\n\n        It may return a `view` (a rendering descriptor from a closed set: bar, table or\n        stat \u2014 never markup, so there is nothing to sanitise) and a `diff` (a proposed new\n        journey version).\n\n        **A returned `diff` has already been parsed, linted and diffed against the current\n        version.** An invalid proposal is handed back to the model to correct and never\n        reaches this response, so anything you receive here would publish as it stands.\n        Nothing is published by this endpoint.\n\n        When no model credential is configured the copilot answers by routing keywords to\n        the same tools and sets `offline: true`. The data is real either way; the\n        reasoning is not.\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: "#/components/schemas/CopilotRequest"\n      responses:\n        "200":\n          description: The answer, with an optional rendering and an optional proposal.\n          content:\n            application/json:\n              schema:\n                $ref: "#/components/schemas/CopilotAnswer"\n        "400":\n          $ref: "#/components/responses/BadRequest"\n        "401":\n          $ref: "#/components/responses/Unauthorized"\n        "404":\n          $ref: "#/components/responses/NotFound"\n        "500":\n          $ref: "#/components/responses/InternalError"\n\ncomponents:\n  securitySchemes:\n    bearerAuth:\n      type: http\n      scheme: bearer\n      description: |\n        Set `API_TOKEN` on the server to require it. Unset \u2014 the default for local\n        development \u2014 the guard is not installed and every endpoint is open. The hook is\n        real code either way, so enabling authentication is a variable, not a project.\n\n  parameters:\n    JourneyName:\n      name: journey\n      in: path\n      required: true\n      description: The journey\'s stable name, as declared by `journey:` in its spec.\n      schema:\n        type: string\n        minLength: 1\n        maxLength: 120\n        pattern: "^[a-z0-9][a-z0-9-]*$"\n        example: mba-admissions-qualification\n\n    VersionA:\n      name: a\n      in: query\n      required: true\n      description: The baseline version \u2014 the one currently live.\n      schema:\n        type: integer\n        minimum: 1\n        example: 3\n\n    VersionB:\n      name: b\n      in: query\n      required: true\n      description: The candidate version being evaluated against the baseline.\n      schema:\n        type: integer\n        minimum: 1\n        example: 4\n\n    JourneyVersion:\n      name: version\n      in: query\n      required: false\n      description: Which version to check. Omit for the latest published version.\n      schema:\n        type: integer\n        minimum: 1\n        example: 4\n\n    LeadId:\n      name: leadId\n      in: path\n      required: true\n      description: |\n        The session\'s lead id, returned when the session started. Chat leads carry a\n        `web_` prefix so a seed script\'s cleanup can never delete a real conversation.\n      schema:\n        type: string\n        pattern: "^web_[0-9a-f]{16}$"\n        example: web_3f9a21c07b4e6d15\n\n    CohortSize:\n      name: n\n      in: query\n      required: false\n      description: Cap the cohort to the first N leads. Omit for all of them.\n      schema:\n        type: integer\n        minimum: 1\n        example: 200\n\n    ReportingCurrency:\n      name: currency\n      in: query\n      required: false\n      description: |\n        ISO 4217 code for the reporting currency. Amounts are integer minor units of it.\n        Defaults to INR.\n      schema:\n        type: string\n        pattern: "^[A-Z]{3}$"\n        default: INR\n        example: INR\n\n    ConversionMetric:\n      name: conversion\n      in: query\n      required: false\n      description: |\n        Which of the tenant\'s declared metrics means "converted" for this question. There\n        is no platform-wide definition. If the named metric is not declared on the\n        journey, every detector is skipped with that reason rather than substituting a\n        guess.\n      schema:\n        type: string\n        minLength: 1\n        maxLength: 60\n        default: conversion\n        example: conversion\n\n    QualifiedMetric:\n      name: qualified\n      in: query\n      required: false\n      description: Which declared metric means "qualified".\n      schema:\n        type: string\n        minLength: 1\n        maxLength: 60\n        default: qualified_lead\n        example: qualified_lead\n\n  responses:\n    BadRequest:\n      description: The request was malformed or violated a stated constraint.\n      content:\n        application/json:\n          schema:\n            $ref: "#/components/schemas/Error"\n          example:\n            error: journey (string), a and b (integers) are required\n    Unauthorized:\n      description: The Bearer token was missing or invalid.\n      content:\n        application/json:\n          schema:\n            $ref: "#/components/schemas/Error"\n          example:\n            error: a valid Bearer token is required\n    NotFound:\n      description: |\n        The journey or version does not exist. Distinguished deliberately from a 502:\n        collapsing both into 404 once hid an authentication failure behind\n        "journey not found" for an afternoon.\n      content:\n        application/json:\n          schema:\n            $ref: "#/components/schemas/Error"\n          example:\n            error: "journey not found: mba-admissions-qualification v9"\n    InternalError:\n      description: |\n        An upstream dependency failed \u2014 the database, or the model provider. Returned as\n        502 by the running server when the failure is identifiably upstream.\n      content:\n        application/json:\n          schema:\n            $ref: "#/components/schemas/Error"\n          example:\n            error: connection refused\n\n  schemas:\n    Error:\n      type: object\n      description: The single error shape every endpoint uses on every failure.\n      required: [error]\n      additionalProperties: false\n      properties:\n        error:\n          type: string\n          description: A message written for the developer reading it, not an error code.\n          minLength: 1\n          maxLength: 500\n          example: currency must be a three-letter ISO code\n      example:\n        error: currency must be a three-letter ISO code\n\n    HealthStatus:\n      type: object\n      required: [ok]\n      additionalProperties: false\n      properties:\n        ok:\n          type: boolean\n          description: Always true when the process can answer at all.\n          example: true\n      example:\n        ok: true\n\n    JourneyVersionList:\n      type: object\n      required: [versions, strategies]\n      additionalProperties: false\n      properties:\n        versions:\n          type: array\n          description: Published version numbers, newest first.\n          items:\n            type: integer\n            minimum: 1\n            example: 4\n          example: [7, 5, 4, 3]\n        strategies:\n          type: object\n          description: |\n            Which conversation strategy each version runs, keyed by version number.\n            `scripted` walks the evidence contract in a fixed order; `open` lets the\n            agent choose its own next move, subject to the guardrail. Reported\n            alongside `versions` rather than instead of it, so a client that only\n            needs the list is unaffected. A version whose spec will not parse is\n            reported as `scripted` rather than failing the list.\n          additionalProperties:\n            type: string\n            enum: [scripted, open]\n          example: { "7": open, "5": scripted, "4": scripted, "3": scripted }\n      example:\n        versions: [7, 5, 4, 3]\n        strategies: { "7": open, "5": scripted, "4": scripted, "3": scripted }\n\n    SpecChange:\n      type: object\n      description: One path that differs between two versions.\n      required: [path, kind]\n      additionalProperties: false\n      properties:\n        path:\n          type: string\n          description: Dotted path into the parsed spec.\n          example: evidence.decision_maker.required\n        kind:\n          type: string\n          enum: [added, removed, changed]\n          example: changed\n        before:\n          nullable: true\n          description: The value in the earlier version. Absent when the path was added.\n          example: false\n        after:\n          nullable: true\n          description: The value in the later version. Absent when the path was removed.\n          example: true\n      example:\n        path: evidence.decision_maker.required\n        kind: changed\n        before: false\n        after: true\n\n    SpecDiff:\n      type: object\n      required: [changes]\n      additionalProperties: false\n      properties:\n        changes:\n          type: array\n          items:\n            $ref: "#/components/schemas/SpecChange"\n      example:\n        changes:\n          - path: version\n            kind: changed\n            before: 4\n            after: 5\n          - path: evidence.decision_maker.required\n            kind: changed\n            before: false\n            after: true\n\n    StartChatRequest:\n      type: object\n      required: [journey]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          minLength: 1\n          maxLength: 120\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          description: A specific version. Omit for the latest, or supply `split`.\n          example: 5\n        split:\n          type: object\n          description: |\n            Live A/B. Version number to percentage, summing to 100. Assignment is\n            deterministic, so re-running an experiment does not reshuffle anyone.\n          additionalProperties:\n            type: number\n            minimum: 0\n            maximum: 100\n          minProperties: 2\n          example: { "4": 50, "5": 50 }\n        source:\n          type: string\n          maxLength: 60\n          default: web_chat\n          example: web_chat\n        campaignId:\n          type: string\n          maxLength: 120\n          default: direct\n          example: meta_scholarships\n        creativeId:\n          type: string\n          maxLength: 120\n          default: console\n          example: cr_fees\n      example:\n        journey: mba-admissions-qualification\n        split: { "4": 50, "5": 50 }\n\n    ChatMessageRequest:\n      type: object\n      required: [text]\n      additionalProperties: false\n      properties:\n        text:\n          type: string\n          minLength: 1\n          maxLength: 2000\n          example: I am looking at the executive MBA for this intake.\n      example:\n        text: I am looking at the executive MBA for this intake.\n\n    ChatTurn:\n      type: object\n      required: [role, text, at]\n      additionalProperties: false\n      properties:\n        role:\n          type: string\n          enum: [agent, lead]\n          example: agent\n        text:\n          type: string\n          example: Hi, I am an AI assistant from the admissions team.\n        at:\n          type: string\n          format: date-time\n          example: "2026-09-05T09:14:02.117Z"\n        move:\n          allOf:\n            - $ref: "#/components/schemas/MoveView"\n          description: |\n            The decision that produced this agent turn, for an open-strategy version.\n            Taken from the order of the log \u2014 a `MoveChosen` is written immediately\n            before the `MessageSent` it explains \u2014 rather than inferred by pairing\n            counts, which would go wrong for any conversation containing a turn that\n            sent nothing. Absent on lead turns, on the pinned opening, and on every\n            turn of a scripted conversation.\n      example:\n        role: agent\n        text: Happy to explain. There are merit scholarships and employer-sponsorship routes.\n        at: "2026-09-05T09:14:34.882Z"\n        move:\n          move: answer\n          proposed: answer\n          overridden: false\n          rule: null\n          rationale: the lead asked about scholarships and a declared fact covers it\n          at: "2026-09-05T09:14:34.611Z"\n\n    MoveView:\n      type: object\n      description: |\n        One decision an open-strategy agent made, and what the guardrail did with it.\n\n        `proposed` and `move` differ exactly when the guardrail intervened, so the pair\n        is the whole audit trail: what the model wanted, what it was allowed, and which\n        rule made the difference. Absent entirely for a `scripted` version, which makes\n        no decisions worth recording \u2014 its path is in the code.\n      required: [move, proposed, overridden, rule, rationale, at]\n      additionalProperties: false\n      properties:\n        move:\n          type: string\n          enum: [ask, answer, acknowledge, offer, close, escalate]\n          description: What was actually performed.\n          example: acknowledge\n        proposed:\n          type: string\n          enum: [ask, answer, acknowledge, offer, close, escalate]\n          description: What the planner asked for. Equal to `move` when nothing intervened.\n          example: answer\n        overridden:\n          type: boolean\n          description: True when the guardrail refused or altered the proposal.\n          example: true\n        rule:\n          type: string\n          nullable: true\n          enum:\n            [move_not_permitted, close_without_required_evidence, answer_without_knowledge,\n             answer_quoted_a_figure, ask_unknown_field, ask_already_established,\n             ask_sensitive_too_early, offer_without_privilege, offer_without_binding,\n             deflections_exhausted, empty_message, null]\n          description: |\n            The guardrail rule that fired, from a closed set, or null when the proposal\n            stood. Named rather than generic, because "the guardrail blocked it" is not\n            something anyone can act on \u2014 and because a named rule can be counted.\n          example: answer_without_knowledge\n        rationale:\n          type: string\n          description: The planner\'s own one-line reason, recorded verbatim.\n          example: the lead asked a question no declared knowledge entry covers\n        at:\n          type: string\n          format: date-time\n          example: "2026-09-05T09:14:05.220Z"\n      example:\n        move: acknowledge\n        proposed: answer\n        overridden: true\n        rule: answer_without_knowledge\n        rationale: the lead asked a question no declared knowledge entry covers\n        at: "2026-09-05T09:14:05.220Z"\n\n    EvidenceView:\n      type: object\n      description: |\n        One field of the journey\'s declared evidence contract, and whether this\n        conversation has established it yet. Watching these fill in is the difference\n        between a declared contract and a prompt.\n      required: [field, required, value, confidence, sensitive]\n      additionalProperties: false\n      properties:\n        field:\n          type: string\n          example: budget_band\n        required:\n          type: boolean\n          example: true\n        value:\n          nullable: true\n          description: Null until established.\n          example: needs_financing\n        confidence:\n          type: number\n          format: double\n          nullable: true\n          minimum: 0\n          maximum: 1\n          example: 0.88\n        sensitive:\n          type: boolean\n          description: Declared `sensitive`, so the agent will not open with it.\n          example: true\n\n    ChatState:\n      type: object\n      required:\n        [leadId, journey, version, strategy, turns, evidence, missingRequired, score, decision, metrics, completed, escalated, escalationRule, endedReason, moves, modelCost, currency, offline]\n      additionalProperties: false\n      properties:\n        leadId:\n          type: string\n          example: web_3f9a21c07b4e6d15\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          example: 5\n        strategy:\n          type: string\n          enum: [scripted, open]\n          description: |\n            Which conversation strategy this version runs. `scripted` walks the evidence\n            contract in a fixed order, so the same conversation always goes the same way.\n            `open` lets the agent choose its own next move each turn, so two identical\n            conversations may diverge \u2014 and every choice appears in `moves`.\n          example: open\n        turns:\n          type: array\n          items:\n            $ref: "#/components/schemas/ChatTurn"\n        evidence:\n          type: array\n          items:\n            $ref: "#/components/schemas/EvidenceView"\n        missingRequired:\n          type: array\n          description: Required fields still to be established. Empty means ready to score.\n          items:\n            type: string\n            example: budget_band\n          example: [budget_band]\n        score:\n          type: integer\n          nullable: true\n          minimum: 0\n          maximum: 100\n          description: Null until required evidence is complete.\n          example: 80\n        decision:\n          type: string\n          nullable: true\n          description: The routing decision, named by the journey\'s own routing block.\n          example: hot\n        metrics:\n          type: object\n          description: |\n            The journey\'s OWN declared metrics, evaluated live over this conversation.\n            There is no platform-wide notion of "qualified" to report instead.\n          additionalProperties:\n            oneOf:\n              - type: boolean\n              - type: number\n          example: { qualified_lead: true, booked: true, conversion: false, revenue: 0 }\n        completed:\n          type: boolean\n          example: true\n        escalated:\n          type: boolean\n          example: false\n        escalationRule:\n          type: string\n          nullable: true\n          description: The declared rule that fired, when one did.\n          example: evidence.budget_band == needs_financing\n        endedReason:\n          type: string\n          nullable: true\n          enum: [routed, escalated, turn_budget, null]\n          description: |\n            Why the conversation is over, or null while it is still going.\n\n            `completed` alone says "a decision was reached", which is not the same as\n            "this is finished": a conversation that exhausts its turn budget without\n            establishing required evidence reaches no decision and is still over. Clients\n            should gate the reply box on this rather than on `completed`.\n          example: routed\n        moves:\n          type: array\n          description: |\n            Every decision the planner made, in order. Empty for a `scripted` version.\n\n            Overlaps with the `move` on each agent turn, deliberately: a `close` or an\n            `escalate` sends no message, so there is no turn for it to hang on \u2014 and those\n            are the two decisions a reviewer most wants to find.\n          items:\n            $ref: "#/components/schemas/MoveView"\n        modelCost:\n          type: integer\n          minimum: 0\n          description: |\n            Metered from real token usage, in minor units of `currency`. Zero when running\n            without a model credential, which is a fact rather than an estimate.\n          example: 214\n        currency:\n          type: string\n          pattern: "^[A-Z]{3}$"\n          example: INR\n        offline:\n          type: boolean\n          description: |\n            True when no model credential is configured; a deterministic keyword extractor\n            is answering and the conversation quality is not representative.\n          example: true\n      example:\n        leadId: web_3f9a21c07b4e6d15\n        journey: mba-admissions-qualification\n        version: 7\n        strategy: open\n        turns:\n          - { role: agent, text: "Hi, I\'m an AI assistant from the admissions team.", at: "2026-09-05T09:14:02.117Z" }\n          - { role: lead, text: "What are the scholarships like?", at: "2026-09-05T09:14:31.004Z" }\n          - role: agent\n            text: "Happy to explain. There are merit scholarships and employer-sponsorship routes, and the admissions team assesses eligibility case by case."\n            at: "2026-09-05T09:14:34.882Z"\n            move:\n              move: answer\n              proposed: answer\n              overridden: false\n              rule: null\n              rationale: the lead asked about scholarships and a declared fact covers it\n              at: "2026-09-05T09:14:34.611Z"\n          - { role: lead, text: "Executive MBA, this intake", at: "2026-09-05T09:15:02.400Z" }\n        evidence:\n          - { field: target_program, required: true, value: executive_mba, confidence: 0.95, sensitive: false }\n          - { field: timeline, required: true, value: this_intake, confidence: 0.9, sensitive: false }\n          - { field: budget_band, required: true, value: null, confidence: null, sensitive: true }\n        missingRequired: [budget_band]\n        score: null\n        decision: null\n        metrics: { qualified_lead: false, booked: false, conversion: false, revenue: 0 }\n        completed: false\n        escalated: false\n        escalationRule: null\n        endedReason: null\n        moves:\n          - move: answer\n            proposed: answer\n            overridden: false\n            rule: null\n            rationale: the lead asked about scholarships and a declared fact covers it\n            at: "2026-09-05T09:14:34.611Z"\n        modelCost: 214\n        currency: INR\n        offline: false\n\n    ChatReply:\n      type: object\n      required: [reply, state]\n      additionalProperties: false\n      properties:\n        reply:\n          type: string\n          nullable: true\n          description: |\n            Null when the agent has nothing further to say \u2014 the conversation completed, or\n            a policy rule escalated it to a human.\n          example: Which programme are you considering?\n        state:\n          $ref: "#/components/schemas/ChatState"\n\n    LiveVersion:\n      type: object\n      required: [journey, version]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          example: 5\n        promotedAt:\n          type: string\n          format: date-time\n          description: Present on the response to a promotion.\n          example: "2026-09-05T18:22:41.006Z"\n      example:\n        journey: mba-admissions-qualification\n        version: 5\n\n    PromoteRequest:\n      type: object\n      required: [version]\n      additionalProperties: false\n      properties:\n        version:\n          type: integer\n          minimum: 1\n          description: A version that is already published.\n          example: 7\n      example:\n        version: 7\n\n    JourneySource:\n      type: object\n      required: [journey, version, yaml]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          example: 4\n        yaml:\n          type: string\n          example: "journey: mba-admissions-qualification\\nversion: 4\\n..."\n      example:\n        journey: mba-admissions-qualification\n        version: 4\n        yaml: "journey: mba-admissions-qualification\\nversion: 4\\n..."\n\n    DraftSpec:\n      type: object\n      required: [yaml]\n      additionalProperties: false\n      properties:\n        yaml:\n          type: string\n          description: The complete journey specification.\n          minLength: 1\n          maxLength: 40000\n          example: "journey: mba-admissions-qualification\\nversion: 6\\n..."\n      example:\n        yaml: "journey: mba-admissions-qualification\\nversion: 6\\n..."\n\n    DraftLintResult:\n      type: object\n      required: [valid, warnings]\n      additionalProperties: false\n      properties:\n        valid:\n          type: boolean\n          description: Whether the draft parses at all.\n          example: true\n        journey:\n          type: string\n          description: Present only when the draft parses.\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          description: Present only when the draft parses.\n          example: 6\n        error:\n          type: string\n          description: Present only when the draft does not parse.\n          maxLength: 500\n          example: routing needs exactly one "otherwise" rule, found 2\n        warnings:\n          type: array\n          items:\n            $ref: "#/components/schemas/SpecWarning"\n      example:\n        valid: true\n        journey: mba-admissions-qualification\n        version: 6\n        warnings: []\n\n    LintReport:\n      type: object\n      required: [journey, version, warnings]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          example: 4\n        warnings:\n          type: array\n          description: Empty when the version passes every check.\n          items:\n            $ref: "#/components/schemas/SpecWarning"\n      example:\n        journey: mba-admissions-qualification\n        version: 4\n        warnings:\n          - code: unreachable_qualification\n            message: required evidence can score at most 65, but qualifying needs 70. This journey cannot qualify anyone.\n\n    ReplayRequest:\n      type: object\n      required: [journey, a, b]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          minLength: 1\n          maxLength: 120\n          example: mba-admissions-qualification\n        a:\n          type: integer\n          minimum: 1\n          description: The baseline version.\n          example: 3\n        b:\n          type: integer\n          minimum: 1\n          description: The candidate version.\n          example: 4\n        n:\n          type: integer\n          minimum: 1\n          description: |\n            Cap the cohort to the first N leads. A cap is the difference between a screen\n            you can click and one that starts a six-figure token job.\n          example: 200\n        leadIds:\n          type: array\n          description: |\n            Which historical leads to replay. Omit to replay every lead on the journey.\n          items:\n            type: string\n            minLength: 1\n            maxLength: 64\n            example: L_meta_executive_528\n          example: [L_meta_executive_528, L_meta_executive_696]\n      example:\n        journey: mba-admissions-qualification\n        a: 3\n        b: 4\n\n    ReplayEstimate:\n      type: object\n      required: [available, leads, extracted, reused, estimatedUsd, modelled]\n      additionalProperties: false\n      properties:\n        available:\n          type: integer\n          minimum: 0\n          description: Leads on this journey in total.\n          example: 2000\n        leads:\n          type: integer\n          minimum: 0\n          description: Leads this replay would cover, after any cap.\n          example: 200\n        extracted:\n          type: integer\n          minimum: 0\n          description: Of those, how many need a model call. The only ones that cost.\n          example: 74\n        reused:\n          type: integer\n          minimum: 0\n          description: How many already carry their evidence on the record.\n          example: 126\n        estimatedUsd:\n          type: number\n          format: double\n          minimum: 0\n          description: From a measured per-extraction cost, not a guess.\n          example: 0.185\n        modelled:\n          type: boolean\n          description: |\n            False when no credential is configured, in which case the deterministic\n            extractor runs and the replay is free.\n          example: true\n      example:\n        available: 2000\n        leads: 200\n        extracted: 74\n        reused: 126\n        estimatedUsd: 0.185\n        modelled: true\n\n    ReplayCost:\n      type: object\n      description: |\n        What a replay actually cost. Replay writes no events \u2014 it is a read over history \u2014\n        so its spend appears in no `CostObserved` row and would otherwise be invisible.\n      required: [leads, extracted, reused, usd]\n      additionalProperties: false\n      properties:\n        leads: { type: integer, minimum: 0, example: 200 }\n        extracted: { type: integer, minimum: 0, example: 74 }\n        reused: { type: integer, minimum: 0, example: 126 }\n        usd: { type: number, format: double, minimum: 0, example: 0.1832 }\n      example:\n        leads: 200\n        extracted: 74\n        reused: 126\n        usd: 0.1832\n\n    ReplayArm:\n      type: object\n      description: One version\'s result over the replayed cohort.\n      required: [version, qualifiedRate, projectedConversions]\n      additionalProperties: false\n      properties:\n        version:\n          type: integer\n          minimum: 1\n          example: 4\n        qualifiedRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          description: Share of the cohort this version would have qualified.\n          example: 0.048\n        projectedConversions:\n          type: number\n          format: double\n          minimum: 0\n          description: |\n            MODELLED. Observed conversion rates per routing decision, applied to this\n            version\'s counterfactual routing. An estimate, never an observation.\n          example: 89.5\n      example:\n        version: 4\n        qualifiedRate: 0.048\n        projectedConversions: 89.5\n\n    ReplayOutcome:\n      type: object\n      description: What one version did with one lead.\n      required: [leadId, decision, qualified, turns]\n      additionalProperties: false\n      properties:\n        leadId:\n          type: string\n          minLength: 1\n          maxLength: 64\n          example: L_meta_executive_696\n        decision:\n          type: string\n          description: The routing decision, named by the journey\'s own routing block.\n          example: hot\n        qualified:\n          type: boolean\n          example: true\n        turns:\n          type: integer\n          minimum: 0\n          example: 6\n      example:\n        leadId: L_meta_executive_696\n        decision: hot\n        qualified: true\n        turns: 6\n\n    Divergence:\n      type: object\n      description: |\n        A lead the two versions treated differently. This list is the answer to\n        "show me where the new version actually changed something".\n      required: [leadId, a, b, actualOutcome]\n      additionalProperties: false\n      properties:\n        leadId:\n          type: string\n          minLength: 1\n          maxLength: 64\n          example: L_meta_executive_696\n        a:\n          $ref: "#/components/schemas/ReplayOutcome"\n        b:\n          $ref: "#/components/schemas/ReplayOutcome"\n        actualOutcome:\n          type: string\n          nullable: true\n          description: OBSERVED. What really happened to this lead, or null if nothing did.\n          example: paid\n      example:\n        leadId: L_meta_executive_696\n        a: { leadId: L_meta_executive_696, decision: warm, qualified: false, turns: 6 }\n        b: { leadId: L_meta_executive_696, decision: hot, qualified: true, turns: 6 }\n        actualOutcome: paid\n\n    Lift:\n      type: object\n      required:\n        [n, a, b, absoluteLift, ci95, observedConversionByDecision, divergent, cost]\n      additionalProperties: false\n      properties:\n        n:\n          type: integer\n          minimum: 0\n          description: Leads replayed.\n          example: 2000\n        a:\n          $ref: "#/components/schemas/ReplayArm"\n        b:\n          $ref: "#/components/schemas/ReplayArm"\n        absoluteLift:\n          type: number\n          format: double\n          description: b\'s qualification rate minus a\'s, in percentage points as a fraction.\n          example: 0.029\n        ci95:\n          $ref: "#/components/schemas/ConfidenceInterval"\n        observedConversionByDecision:\n          type: object\n          description: |\n            OBSERVED. Historical conversion rate for each routing decision, measured from\n            what really happened. This is the factual half of the response.\n          additionalProperties:\n            type: number\n            format: double\n            minimum: 0\n            maximum: 1\n          example: { hot: 0.361, warm: 0.138, cold: 0.008, escalated: 0.002 }\n        divergent:\n          type: array\n          items:\n            $ref: "#/components/schemas/Divergence"\n        cost:\n          $ref: "#/components/schemas/ReplayCost"\n      example:\n        n: 2000\n        a: { version: 3, qualifiedRate: 0.018, projectedConversions: 66.1 }\n        b: { version: 4, qualifiedRate: 0.048, projectedConversions: 89.5 }\n        absoluteLift: 0.029\n        ci95: [0.023, 0.038]\n        observedConversionByDecision: { hot: 0.361, warm: 0.138, cold: 0.008 }\n        divergent: []\n        cost: { leads: 200, extracted: 74, reused: 126, usd: 0.1832 }\n\n    ConfidenceInterval:\n      type: array\n      description: |\n        A 95% interval as `[low, high]`. Always reported. A point estimate with no\n        interval invites exactly the challenge it cannot survive.\n      minItems: 2\n      maxItems: 2\n      items:\n        type: number\n        format: double\n      example: [0.023, 0.038]\n\n    Limits:\n      type: object\n      required: [maxCohort, offline]\n      additionalProperties: false\n      properties:\n        maxCohort:\n          type: integer\n          minimum: 1\n          description: Largest simulated or compared cohort this deployment will run.\n          example: 60\n        offline:\n          type: boolean\n          description: |\n            True when no model credential is configured, so nothing here can spend.\n          example: false\n      example:\n        maxCohort: 60\n        offline: false\n\n    SimulateRequest:\n      type: object\n      required: [journey, version, n]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          minLength: 1\n          maxLength: 120\n          example: mba-admissions-qualification\n        version:\n          type: integer\n          minimum: 1\n          example: 4\n        n:\n          type: integer\n          minimum: 1\n          maximum: 2000\n          description: |\n            Personas to run. Capped so that one request cannot start a five-figure model\n            bill.\n          example: 500\n        seed:\n          type: integer\n          minimum: 0\n          description: |\n            Persona generation seed. The same seed produces the same cohort, so a result\n            on stage is the result from rehearsal.\n          default: 1\n          example: 1\n      example:\n        journey: mba-admissions-qualification\n        version: 4\n        n: 500\n\n    CompareRequest:\n      type: object\n      required: [journey, a, b, n]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          minLength: 1\n          maxLength: 120\n          example: mba-admissions-qualification\n        a:\n          type: integer\n          minimum: 1\n          example: 4\n        b:\n          type: integer\n          minimum: 1\n          example: 5\n        n:\n          type: integer\n          minimum: 1\n          maximum: 2000\n          example: 200\n        seed:\n          type: integer\n          minimum: 0\n          description: Used for both arms, which is what makes the comparison paired.\n          default: 1\n          example: 1\n      example:\n        journey: mba-admissions-qualification\n        a: 4\n        b: 5\n        n: 200\n\n    LeadOutcome:\n      type: object\n      description: One simulated conversation\'s result.\n      required: [leadId, completed, qualified, escalated, turns]\n      additionalProperties: true\n      properties:\n        leadId:\n          type: string\n          minLength: 1\n          maxLength: 64\n          example: sim_0f31c7\n        completed:\n          type: boolean\n          description: Whether required evidence was collected and the lead was routed.\n          example: true\n        qualified:\n          type: boolean\n          example: false\n        escalated:\n          type: boolean\n          description: Whether a declared `escalate_when` rule fired.\n          example: false\n        turns:\n          type: integer\n          minimum: 0\n          example: 8\n      example:\n        leadId: sim_0f31c7\n        completed: true\n        qualified: false\n        escalated: false\n        turns: 8\n\n    RunSummary:\n      type: object\n      required:\n        [runId, journey, journeyVersion, n, completed, qualified, escalated, ghosted, avgTurns, results]\n      additionalProperties: false\n      properties:\n        runId:\n          type: string\n          description: |\n            Groups every event this run wrote. All of them are `sim`-scoped, so no\n            live-scoped read can see them.\n          minLength: 1\n          maxLength: 64\n          example: run_9c2f1a\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        journeyVersion:\n          type: integer\n          minimum: 1\n          example: 4\n        n:\n          type: integer\n          minimum: 0\n          example: 500\n        completed:\n          type: integer\n          minimum: 0\n          example: 412\n        qualified:\n          type: integer\n          minimum: 0\n          example: 118\n        escalated:\n          type: integer\n          minimum: 0\n          example: 34\n        ghosted:\n          type: integer\n          minimum: 0\n          description: Personas that stopped replying.\n          example: 54\n        avgTurns:\n          type: number\n          format: double\n          minimum: 0\n          example: 6.4\n        results:\n          type: array\n          items:\n            $ref: "#/components/schemas/LeadOutcome"\n      example:\n        runId: run_9c2f1a\n        journey: mba-admissions-qualification\n        journeyVersion: 4\n        n: 500\n        completed: 412\n        qualified: 118\n        escalated: 34\n        ghosted: 54\n        avgTurns: 6.4\n        results: []\n\n    RunQuality:\n      type: object\n      description: |\n        Aggregate scorecard over a run. Completeness and correctness are deterministic\n        checks against each persona\'s ground truth; the judge scores only what a regex\n        cannot.\n      required:\n        [n, meanCompleteness, meanCorrectness, violationRate, hallucinationRate, ghostRate, escalationRate, qualifiedRate, meanTurns]\n      additionalProperties: false\n      properties:\n        n:\n          type: integer\n          minimum: 0\n          example: 500\n        meanCompleteness:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          description: Share of required evidence fields actually collected.\n          example: 0.86\n        meanCorrectness:\n          type: number\n          format: double\n          nullable: true\n          minimum: 0\n          maximum: 1\n          description: |\n            Share of extracted values that matched the persona\'s ground truth. Null when\n            no persona carried ground truth to check against.\n          example: 0.94\n        violationRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          description: Share of conversations that breached a declared `never` rule.\n          example: 0.004\n        hallucinationRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          example: 0.01\n        ghostRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          example: 0.108\n        escalationRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          example: 0.068\n        qualifiedRate:\n          type: number\n          format: double\n          minimum: 0\n          maximum: 1\n          example: 0.236\n        meanTurns:\n          type: number\n          format: double\n          minimum: 0\n          example: 6.4\n      example:\n        n: 500\n        meanCompleteness: 0.86\n        meanCorrectness: 0.94\n        violationRate: 0.004\n        hallucinationRate: 0.01\n        ghostRate: 0.108\n        escalationRate: 0.068\n        qualifiedRate: 0.236\n        meanTurns: 6.4\n\n    Alert:\n      type: object\n      description: A declared threshold that a run crossed.\n      required: [id, severity, message, observed, threshold]\n      additionalProperties: false\n      properties:\n        id:\n          type: string\n          minLength: 1\n          maxLength: 60\n          example: policy_violations\n        severity:\n          type: string\n          enum: [warn, critical]\n          description: |\n            Policy breaches and evidence correctness are critical; ghosting is a warning,\n            because a lead who stops replying is often the lead\'s own choice whereas a\n            policy breach is always the agent\'s fault.\n          example: critical\n        message:\n          type: string\n          minLength: 1\n          maxLength: 300\n          example: 4.2% of conversations breached a "never" rule\n        observed:\n          type: number\n          format: double\n          example: 0.042\n        threshold:\n          type: number\n          format: double\n          example: 0.01\n      example:\n        id: policy_violations\n        severity: critical\n        message: 4.2% of conversations breached a "never" rule\n        observed: 0.042\n        threshold: 0.01\n\n    SimulationResult:\n      type: object\n      required: [summary, quality, alerts]\n      additionalProperties: false\n      properties:\n        summary:\n          $ref: "#/components/schemas/RunSummary"\n        quality:\n          $ref: "#/components/schemas/RunQuality"\n        alerts:\n          type: array\n          description: Empty when the run cleared every threshold.\n          items:\n            $ref: "#/components/schemas/Alert"\n      example:\n        summary:\n          runId: run_9c2f1a\n          journey: mba-admissions-qualification\n          journeyVersion: 4\n          n: 500\n          completed: 412\n          qualified: 118\n          escalated: 34\n          ghosted: 54\n          avgTurns: 6.4\n          results: []\n        quality:\n          n: 500\n          meanCompleteness: 0.86\n          meanCorrectness: 0.94\n          violationRate: 0.004\n          hallucinationRate: 0.01\n          ghostRate: 0.108\n          escalationRate: 0.068\n          qualifiedRate: 0.236\n          meanTurns: 6.4\n        alerts: []\n\n    ArmResult:\n      type: object\n      description: One side of an A/B comparison.\n      required: [target, summary, quality]\n      additionalProperties: false\n      properties:\n        target:\n          type: string\n          description: |\n            What this arm was pointed at. The same allocator that splits simulated cohorts\n            later points at a parallel-run cohort, so adoption needs no new machinery.\n          minLength: 1\n          maxLength: 120\n          example: v4\n        summary:\n          $ref: "#/components/schemas/RunSummary"\n        quality:\n          $ref: "#/components/schemas/RunQuality"\n\n    Scoreboard:\n      type: object\n      required:\n        [a, b, qualifiedDelta, qualifiedCi95, completenessDelta, correctnessDelta, verdict]\n      additionalProperties: false\n      properties:\n        a:\n          $ref: "#/components/schemas/ArmResult"\n        b:\n          $ref: "#/components/schemas/ArmResult"\n        qualifiedDelta:\n          type: number\n          format: double\n          description: b\'s qualification rate minus a\'s.\n          example: 0.031\n        qualifiedCi95:\n          $ref: "#/components/schemas/ConfidenceInterval"\n        completenessDelta:\n          type: number\n          format: double\n          example: 0.04\n        correctnessDelta:\n          type: number\n          format: double\n          nullable: true\n          example: 0.01\n        verdict:\n          type: string\n          enum: [b_better, a_better, inconclusive]\n          description: |\n            `inconclusive` whenever the interval spans zero. That is a result \u2014 the data\n            does not support a decision \u2014 not an error.\n          example: b_better\n\n    Totals:\n      type: object\n      description: |\n        Aggregate figures for one node of the attribution tree, or for the whole report.\n        Metric names come from the tenant\'s own `metrics:` block, so `counts` and `sums`\n        are keyed by names this platform did not choose.\n      required:\n        [leads, counts, sums, mediaCost, modelCost, totalCost, costPer, returnOnSpend]\n      additionalProperties: false\n      properties:\n        leads:\n          type: integer\n          minimum: 0\n          example: 2000\n        counts:\n          type: object\n          description: For each boolean metric, the number of leads it held for.\n          additionalProperties:\n            type: integer\n            minimum: 0\n          example: { qualified_lead: 80, booked: 80, conversion: 66 }\n        sums:\n          type: object\n          description: |\n            For each aggregate metric, its sum over leads. Monetary metrics are integer\n            minor units.\n          additionalProperties:\n            type: number\n          example: { revenue: 297000000 }\n        mediaCost:\n          type: integer\n          minimum: 0\n          description: MODELLED. Ad spend allocated to leads. Minor units.\n          example: 74900000\n        modelCost:\n          type: integer\n          minimum: 0\n          description: |\n            OBSERVED. Metered from real token usage and converted at write time with the\n            rate recorded in the event. Minor units.\n          example: 0\n        totalCost:\n          type: integer\n          minimum: 0\n          example: 74900000\n        costPer:\n          type: object\n          description: |\n            Total cost divided by the count of each boolean metric. **Null when the count\n            is zero** \u2014 an undefined ratio, not an infinite one.\n          additionalProperties:\n            type: number\n            nullable: true\n          example: { qualified_lead: 936250, conversion: 1134848 }\n        returnOnSpend:\n          type: object\n          description: |\n            Each aggregate metric divided by total cost. Null when nothing was spent.\n          additionalProperties:\n            type: number\n            nullable: true\n          example: { revenue: 39.7 }\n\n    AttributionNode:\n      type: object\n      description: |\n        One level of campaign to creative to journey version. A lead is attributed to the\n        version that produced its routing decision \u2014 the version that actually did the\n        work \u2014 falling back to the version it was ingested under.\n      required: [dimension, value, children, leads, counts, sums, mediaCost, modelCost, totalCost, costPer, returnOnSpend]\n      additionalProperties: false\n      allOf:\n        - $ref: "#/components/schemas/Totals"\n        - type: object\n          properties:\n            dimension:\n              type: string\n              enum: [campaign, creative, version]\n              example: campaign\n            value:\n              type: string\n              description: |\n                The campaign id, creative id, or version number as a string. Leads with no\n                campaign are grouped as `(unattributed)`.\n              minLength: 1\n              maxLength: 120\n              example: meta_scholarships\n            children:\n              type: array\n              description: The next level down. Empty at the version level.\n              items:\n                $ref: "#/components/schemas/AttributionNode"\n      example:\n        dimension: campaign\n        value: meta_scholarships\n        leads: 900\n        counts: { qualified_lead: 22, booked: 22, conversion: 20 }\n        sums: { revenue: 90000000 }\n        mediaCost: 13500000\n        modelCost: 0\n        totalCost: 13500000\n        costPer: { conversion: 675000 }\n        returnOnSpend: { revenue: 66.7 }\n        children:\n          - dimension: creative\n            value: cr_fees\n            leads: 450\n            counts: { qualified_lead: 13, booked: 13, conversion: 14 }\n            sums: { revenue: 63000000 }\n            mediaCost: 6750000\n            modelCost: 0\n            totalCost: 6750000\n            costPer: { conversion: 482142 }\n            returnOnSpend: { revenue: 93.3 }\n            children: []\n\n    AttributionReport:\n      type: object\n      required: [journey, currency, metricKinds, total, tree, caveats]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        currency:\n          type: string\n          pattern: "^[A-Z]{3}$"\n          example: INR\n        metricKinds:\n          type: object\n          description: |\n            Which declared metrics are counted and which are summed. The distinction is\n            load-bearing: a boolean metric aggregates as a count of leads, an aggregate\n            metric as a sum over them.\n          required: [booleans, aggregates]\n          additionalProperties: false\n          properties:\n            booleans:\n              type: array\n              items:\n                type: string\n                example: conversion\n              example: [qualified_lead, booked, conversion]\n            aggregates:\n              type: array\n              items:\n                type: string\n                example: revenue\n              example: [revenue]\n          example:\n            booleans: [qualified_lead, booked, conversion]\n            aggregates: [revenue]\n        total:\n          $ref: "#/components/schemas/Totals"\n        tree:\n          type: array\n          items:\n            $ref: "#/components/schemas/AttributionNode"\n        caveats:\n          type: array\n          description: |\n            Assumptions a customer is entitled to see beside the numbers \u2014 the allocation\n            method, leads with no campaign, leads with no spend ingested, and any metric\n            whose definition drifted between versions present in the data.\n          items:\n            type: string\n            example: Media spend is allocated evenly across the leads a campaign produced that day.\n          example:\n            - Media spend is allocated evenly across the leads a campaign produced that day. A weighted model is a customer decision, not a default.\n      example:\n        journey: mba-admissions-qualification\n        currency: INR\n        metricKinds:\n          booleans: [qualified_lead, booked, conversion]\n          aggregates: [revenue]\n        total:\n          leads: 2000\n          counts: { qualified_lead: 80, booked: 80, conversion: 66 }\n          sums: { revenue: 297000000 }\n          mediaCost: 74900000\n          modelCost: 0\n          totalCost: 74900000\n          costPer: { conversion: 1134848 }\n          returnOnSpend: { revenue: 39.7 }\n        tree: []\n        caveats:\n          - Media spend is allocated evenly across the leads a campaign produced that day.\n\n    Finding:\n      type: object\n      description: One thing worth telling a marketer, with the evidence for it attached.\n      required: [code, severity, claim, detail, n, effect, evidence]\n      additionalProperties: false\n      properties:\n        code:\n          type: string\n          enum:\n            [evidence_bottleneck, segment_divergence, drop_off, routing_miscalibration, timing, policy_friction, version_regression]\n          example: segment_divergence\n        severity:\n          type: string\n          enum: [high, medium, low]\n          example: medium\n        claim:\n          type: string\n          description: One sentence a marketer can read without translation.\n          minLength: 1\n          maxLength: 400\n          example: evidence.budget_band = needs_financing converts 8.6% worse than the rest of the cohort.\n        detail:\n          type: string\n          description: The numbers behind the claim.\n          minLength: 1\n          maxLength: 500\n          example: 0.2% vs 8.7% (n=509 / 743), 95% CI -10.6% .. -6.5%\n        n:\n          type: integer\n          minimum: 0\n          description: Support. A finding without it is an anecdote.\n          example: 1252\n        effect:\n          type: number\n          format: double\n          minimum: 0\n          description: Magnitude, used for ranking. Absolute difference in rates.\n          example: 0.086\n        ci95:\n          $ref: "#/components/schemas/ConfidenceInterval"\n        suggestion:\n          type: string\n          description: What to change in the spec, when there is a defensible answer.\n          maxLength: 400\n          example: Branch on evidence.budget_band = needs_financing rather than routing it on the shared score.\n        evidence:\n          type: object\n          description: Machine-readable backing for the claim, shaped per finding type.\n          additionalProperties: true\n          example:\n            dimension: evidence.budget_band\n            value: needs_financing\n            cohortRate: 0.002\n            baselineRate: 0.087\n            cohortSize: 509\n\n    InsightReport:\n      type: object\n      required: [journey, leadsAnalysed, findings, skipped]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        leadsAnalysed:\n          type: integer\n          minimum: 0\n          example: 2000\n        findings:\n          type: array\n          description: Ranked by severity, then by effect size.\n          items:\n            $ref: "#/components/schemas/Finding"\n        skipped:\n          type: array\n          description: |\n            Detectors that could not run, and why. Present so that silence is never\n            mistaken for a clean bill of health.\n          items:\n            type: object\n            required: [code, reason]\n            additionalProperties: false\n            properties:\n              code:\n                type: string\n                example: version_regression\n              reason:\n                type: string\n                minLength: 1\n                maxLength: 400\n                example: only one journey version in scope\n          example:\n            - code: version_regression\n              reason: only one journey version in scope\n      example:\n        journey: mba-admissions-qualification\n        leadsAnalysed: 2000\n        findings:\n          - code: segment_divergence\n            severity: medium\n            claim: evidence.budget_band = needs_financing converts 8.6% worse than the rest of the cohort.\n            detail: 0.2% vs 8.7% (n=509 / 743), 95% CI -10.6% .. -6.5%\n            n: 1252\n            effect: 0.086\n            ci95: [-0.106, -0.065]\n            suggestion: Branch on evidence.budget_band = needs_financing rather than routing it on the shared score.\n            evidence: { dimension: evidence.budget_band, value: needs_financing }\n        skipped:\n          - code: version_regression\n            reason: only one journey version in scope\n\n    CopilotRequest:\n      type: object\n      required: [journey, question]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          description: |\n            The journey in scope. Fixed by the caller, never chosen by the model \u2014 a\n            copilot that can retarget its own scope is a tenancy hole.\n          minLength: 1\n          maxLength: 120\n          example: mba-admissions-qualification\n        question:\n          type: string\n          minLength: 1\n          maxLength: 500\n          description: A question long enough to be an essay is a paste, not a question.\n          example: Why is my needs_financing cohort converting worse?\n      example:\n        journey: mba-admissions-qualification\n        question: Why is my needs_financing cohort converting worse?\n\n    ViewSeriesPoint:\n      type: object\n      required: [label, value]\n      additionalProperties: false\n      properties:\n        label:\n          type: string\n          minLength: 1\n          maxLength: 120\n          example: needs_financing (n=509)\n        value:\n          type: number\n          format: double\n          example: 0.2\n        band:\n          type: string\n          enum: [observed, modelled]\n          description: |\n            Drives the colouring that keeps measured and estimated numbers visually\n            distinct.\n          example: observed\n\n    View:\n      type: object\n      description: |\n        A rendering descriptor chosen from a closed set. The model never emits markup \u2014\n        HTML from a model into the console DOM would be an XSS hole \u2014 so the console owns\n        how this looks and there is nothing here to sanitise.\n      required: [kind, title]\n      additionalProperties: false\n      properties:\n        kind:\n          type: string\n          enum: [bar, table, stat]\n          example: bar\n        title:\n          type: string\n          minLength: 1\n          maxLength: 160\n          example: Conversion by evidence.budget_band\n        unit:\n          type: string\n          maxLength: 12\n          description: Appended to each value. Bar views only.\n          example: "%"\n        series:\n          type: array\n          description: Bar views only.\n          items:\n            $ref: "#/components/schemas/ViewSeriesPoint"\n        columns:\n          type: array\n          description: Table views only.\n          items:\n            type: string\n            example: campaign\n          example: [campaign, leads, converted]\n        rows:\n          type: array\n          description: Table views only.\n          items:\n            type: array\n            items:\n              type: string\n              nullable: true\n          example: [[meta_scholarships, "900", "20"]]\n        value:\n          type: string\n          description: Stat views only.\n          maxLength: 60\n          example: "\u20B911,348"\n        caption:\n          type: string\n          description: Stat views only.\n          maxLength: 160\n          example: cost per enrolment\n      example:\n        kind: bar\n        title: Conversion by evidence.budget_band\n        unit: "%"\n        series:\n          - { label: "needs_financing (n=509)", value: 0.2, band: observed }\n          - { label: "5L_to_15L (n=375)", value: 9.1, band: observed }\n          - { label: "above_15L (n=368)", value: 8.4, band: observed }\n\n    SpecWarning:\n      type: object\n      description: |\n        A lint warning that travels with a proposal rather than being swallowed. A warning\n        hidden here is a warning nobody acts on.\n      required: [code, message]\n      additionalProperties: false\n      properties:\n        code:\n          type: string\n          enum:\n            [unreachable_qualification, unknown_scoring_field, unreachable_weight, unparseable_metric, unreachable_metric]\n          example: unreachable_qualification\n        message:\n          type: string\n          minLength: 1\n          maxLength: 500\n          example: required evidence can score at most 65, but qualifying needs 70.\n\n    ProposedDiff:\n      type: object\n      description: |\n        A proposed new journey version. Already parsed, linted and diffed before it\n        reached this response, so it would publish as it stands. Nothing has been\n        published.\n      required: [journey, fromVersion, toVersion, rationale, yaml, changes, warnings]\n      additionalProperties: false\n      properties:\n        journey:\n          type: string\n          example: mba-admissions-qualification\n        fromVersion:\n          type: integer\n          minimum: 1\n          example: 5\n        toVersion:\n          type: integer\n          minimum: 2\n          description: Always greater than `fromVersion`; a proposal must bump.\n          example: 6\n        rationale:\n          type: string\n          description: One sentence tying the change to the data that motivated it.\n          minLength: 1\n          maxLength: 400\n          example: budget_band = needs_financing converts 8.6% worse on the shared score; give it its own branch instead.\n        yaml:\n          type: string\n          description: The full proposed spec, ready to publish.\n          minLength: 1\n          example: "journey: mba-admissions-qualification\\nversion: 6\\n..."\n        changes:\n          type: array\n          items:\n            $ref: "#/components/schemas/SpecChange"\n        warnings:\n          type: array\n          items:\n            $ref: "#/components/schemas/SpecWarning"\n      example:\n        journey: mba-admissions-qualification\n        fromVersion: 5\n        toVersion: 6\n        rationale: budget_band = needs_financing converts 8.6% worse on the shared score; give it its own branch instead.\n        yaml: "journey: mba-admissions-qualification\\nversion: 6\\n..."\n        changes:\n          - path: routing.needs_financing_branch\n            kind: added\n            after:\n              when: evidence.budget_band == needs_financing\n              target: nurture.needs_financing_branch\n        warnings: []\n\n    CopilotAnswer:\n      type: object\n      required: [text, usedTools, offline]\n      additionalProperties: false\n      properties:\n        text:\n          type: string\n          minLength: 1\n          maxLength: 2000\n          example: evidence.budget_band = needs_financing converts 8.6% worse than the rest of the cohort.\n        view:\n          $ref: "#/components/schemas/View"\n        diff:\n          $ref: "#/components/schemas/ProposedDiff"\n        usedTools:\n          type: array\n          description: |\n            Which read models backed the answer. The audit trail for every number in it.\n          items:\n            type: string\n            enum: [roi, insights, cohort, read_spec, propose_diff]\n            example: insights\n          example: [insights, cohort, read_spec, propose_diff]\n        offline:\n          type: boolean\n          description: |\n            True when no model credential was configured and the answer came from keyword\n            routing over the same tools. The data is real either way; the reasoning is not.\n          example: true\n';
 
 // packages/web/src/routes/openapi.ts
 var cached2 = null;
@@ -80466,7 +81284,7 @@ var POLICY_DETECTORS = {
 };
 function scoreConversation(spec, state2, persona, hints = {}) {
   const required2 = requiredEvidenceFields(spec);
-  const established = required2.filter((f) => {
+  const established2 = required2.filter((f) => {
     const got = state2.evidence[f];
     return got !== void 0 && got.value !== null && got.value !== void 0;
   });
@@ -80488,7 +81306,7 @@ function scoreConversation(spec, state2, persona, hints = {}) {
   return {
     leadId: state2.leadId,
     personaId: persona.id,
-    evidenceCompleteness: required2.length ? established.length / required2.length : 1,
+    evidenceCompleteness: required2.length ? established2.length / required2.length : 1,
     evidenceCorrectness: gradable.length ? (gradable.length - hallucinated.length) / gradable.length : null,
     hallucinatedFields: hallucinated,
     policyViolations: violations,
@@ -80693,7 +81511,7 @@ async function build() {
   const registry2 = new JourneyRegistry(pool, tenantId);
   const events = new EventStore(pool, tenantId);
   const credentialled = hasCredential();
-  const runtime = credentialled ? new AgentRuntime() : new AgentRuntime(new KeywordExtractor(), offlineClient());
+  const runtime = credentialled ? new AgentRuntime() : new AgentRuntime(new KeywordExtractor(), offlineClient(), new OfflinePlanner());
   const fx = {
     currency: process.env.REPORTING_CURRENCY ?? "INR",
     perUsd: Number(process.env.FX_MINOR_PER_USD ?? 8300)

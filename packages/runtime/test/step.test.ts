@@ -11,7 +11,7 @@ const spec = parseSpec(readFileSync(join(HERE, "../../core/test/fixtures/mba-v4.
 
 const state = (over: Partial<LeadState> = {}): LeadState => ({
   leadId: "L1", journey: spec.journey, journeyVersion: spec.version,
-  evidence: {}, turns: [], outcomes: [], ...over,
+  evidence: {}, turns: [], outcomes: [], moves: [], ...over,
 });
 
 const turn = (role: "agent" | "lead", text: string) => ({ role, text, at: new Date() });
@@ -145,5 +145,179 @@ describe("AgentRuntime.step — sentiment escalation", () => {
       extractor(ev({ target_program: "executive_mba" })), asker("next?") as never,
     ).step(spec, s);
     expect(actions.some((a) => a.kind === "escalate")).toBe(false);
+  });
+});
+
+// ─── The open strategy ───────────────────────────────────────────────────────
+
+const openSpec = parseSpec(
+  readFileSync(join(HERE, "../../core/test/fixtures/mba-v7-open.yaml"), "utf8"),
+);
+
+const openState = (over: Partial<LeadState> = {}): LeadState => ({
+  leadId: "L1", journey: openSpec.journey, journeyVersion: openSpec.version,
+  evidence: {}, turns: [], outcomes: [], moves: [], ...over,
+});
+
+/** A planner that proposes whatever the test wants, without a model. */
+const planner = (proposal: Record<string, unknown>) => ({
+  plan: vi.fn().mockResolvedValue({
+    move: "ask", rationale: "r", message: "m",
+    targetField: null, knowledgeKey: null, capability: null, confidence: 0.8,
+    ...proposal,
+  }),
+});
+
+const runtimeFor = (
+  p: ReturnType<typeof planner>,
+  evidence: Record<string, { value: unknown; confidence: number }> = {},
+  askText = "generated question",
+) => new AgentRuntime(extractor(evidence), asker(askText) as never, p as never);
+
+const kinds = (actions: Awaited<ReturnType<AgentRuntime["step"]>>) => actions.map((a) => a.kind);
+const findMove = (actions: Awaited<ReturnType<AgentRuntime["step"]>>) =>
+  actions.find((a) => a.kind === "move") as
+    | Extract<Awaited<ReturnType<AgentRuntime["step"]>>[number], { kind: "move" }>
+    | undefined;
+
+describe("AgentRuntime.step — open strategy", () => {
+  const started = { turns: [turn("agent", "hi"), turn("lead", "tell me about intakes")] };
+
+  it("still opens with the pinned disclosure and no model call", async () => {
+    // Disclosure is a commitment to the lead, not a decision the agent gets to make.
+    const p = planner({});
+    const actions = await runtimeFor(p).step(openSpec, openState());
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ kind: "send", pinnedTemplate: "templates/wa_mba_optin_v4" });
+    expect(p.plan).not.toHaveBeenCalled();
+  });
+
+  it("still escalates on an explicit request for a human, without planning", async () => {
+    const p = planner({ move: "acknowledge", message: "no need!" });
+    const actions = await runtimeFor(p).step(openSpec,
+      openState({ turns: [turn("agent", "hi"), turn("lead", "put me through to a human")] }));
+    expect(actions).toEqual([{ kind: "escalate", reason: "asks_for_human" }]);
+    expect(p.plan).not.toHaveBeenCalled();
+  });
+
+  it("still honours a declared escalation trigger over the planner", async () => {
+    const p = planner({ move: "ask", targetField: "timeline", message: "when?" });
+    const actions = await runtimeFor(p, ev({ budget_band: "needs_financing" }))
+      .step(openSpec, openState(started));
+    expect(actions.map((a) => a.kind)).toContain("escalate");
+    expect(p.plan).not.toHaveBeenCalled();
+  });
+
+  it("still stops at the turn budget", async () => {
+    const p = planner({});
+    const turns = Array.from({ length: openSpec.policy.max_turns },
+      (_, i) => turn(i % 2 === 0 ? "agent" : "lead", "x"));
+    const actions = await runtimeFor(p).step(openSpec, openState({ turns }));
+    expect(actions).toEqual([{ kind: "complete", qualified: false }]);
+    expect(p.plan).not.toHaveBeenCalled();
+  });
+
+  it("records the decision before the actions that carry it out", async () => {
+    const p = planner({ move: "ask", targetField: "timeline", message: "Which intake?" });
+    const actions = await runtimeFor(p).step(openSpec, openState(started));
+    expect(kinds(actions)).toEqual(["move", "send"]);
+  });
+
+  it("sends the planner's own wording when the move was admitted", async () => {
+    const p = planner({ move: "ask", targetField: "timeline", message: "Which intake?" });
+    const a = asker("should not be used");
+    const actions = await new AgentRuntime(extractor(), a as never, p as never)
+      .step(openSpec, openState(started));
+    expect(actions).toContainEqual({ kind: "send", text: "Which intake?" });
+    expect(callsOf(a)).toHaveLength(0);
+  });
+
+  it("writes its own question when the move was overridden", async () => {
+    // Whatever the planner wrote was for a different move, so reusing it would
+    // put an answer's framing on a question.
+    const p = planner({ move: "close", message: "Lovely speaking with you." });
+    const a = asker("And which intake are you aiming for?");
+    const actions = await new AgentRuntime(extractor(), a as never, p as never)
+      .step(openSpec, openState(started));
+    expect(findMove(actions)).toMatchObject({
+      proposed: "close", move: "ask", overridden: true,
+      rule: "close_without_required_evidence",
+    });
+    expect(actions).toContainEqual({ kind: "send", text: "And which intake are you aiming for?" });
+  });
+
+  it("appends the declared fact to an admitted answer", async () => {
+    const p = planner({ move: "answer", knowledgeKey: "intakes", message: "Sure." });
+    const actions = await runtimeFor(p).step(openSpec, openState(started));
+    const sent = actions.find((x) => x.kind === "send") as { text: string };
+    expect(sent.text).toBe(`Sure. ${openSpec.knowledge.intakes}`);
+  });
+
+  it("scores and routes through the same path as the scripted strategy", async () => {
+    const complete = ev({
+      target_program: "executive_mba", timeline: "this_intake", budget_band: "above_15L",
+      decision_maker: "self",
+    });
+    const p = planner({ move: "close", message: "" });
+    const actions = await runtimeFor(p, complete).step(openSpec, openState(started));
+    expect(kinds(actions)).toEqual(["extract", "move", "score", "route", "complete"]);
+    expect(actions).toContainEqual({ kind: "score", score: 80 });
+    expect(actions).toContainEqual({ kind: "complete", qualified: true });
+  });
+
+  it("escalates on the planner's judgement under a countable reason", async () => {
+    const p = planner({ move: "escalate", message: "", rationale: "they sound upset" });
+    const actions = await runtimeFor(p).step(openSpec, openState(started));
+    expect(actions).toContainEqual({ kind: "escalate", reason: "agent_judgement" });
+    expect(findMove(actions)?.rationale).toBe("they sound upset");
+  });
+
+  it("emits an invoke for the caller rather than reaching the broker itself", async () => {
+    const p = planner({
+      move: "offer", capability: "catalog.lookup_program", message: "Let me look.",
+    });
+    const actions = await runtimeFor(p, ev({ target_program: "online_mba" }))
+      .step(openSpec, openState(started), { toolsAvailable: true });
+    expect(kinds(actions)).toEqual(["extract", "move", "send", "invoke"]);
+  });
+
+  it("refuses an offer no caller can perform", async () => {
+    const p = planner({
+      move: "offer", capability: "catalog.lookup_program", message: "Let me look.",
+    });
+    const actions = await runtimeFor(p).step(openSpec, openState(started));
+    expect(kinds(actions)).not.toContain("invoke");
+    expect(findMove(actions)).toMatchObject({ overridden: true, rule: "offer_without_binding" });
+  });
+
+  it("does not plan a reply during replay, and still reaches a decision", async () => {
+    // A finished transcript has no lead left to react to, so planning would burn
+    // a call and change nothing — but the comparison that matters still runs.
+    const complete = ev({
+      target_program: "executive_mba", timeline: "this_intake", budget_band: "above_15L",
+    });
+    const p = planner({ move: "ask", targetField: "timeline", message: "?" });
+    const actions = await runtimeFor(p, complete)
+      .step(openSpec, openState(started), { allowFollowUp: false });
+    expect(p.plan).not.toHaveBeenCalled();
+    expect(kinds(actions)).toEqual(["extract", "score", "route", "complete"]);
+  });
+
+  it("does not claim a decision during replay when the transcript was inconclusive", async () => {
+    const p = planner({});
+    const actions = await runtimeFor(p, ev({ target_program: "online_mba" }))
+      .step(openSpec, openState(started), { allowFollowUp: false });
+    expect(kinds(actions)).toEqual(["extract", "complete"]);
+    expect(actions).toContainEqual({ kind: "complete", qualified: false });
+  });
+});
+
+describe("AgentRuntime.step — the scripted strategy is untouched", () => {
+  it("never plans, and never records a move", async () => {
+    const p = planner({ move: "acknowledge", message: "hmm" });
+    const actions = await runtimeFor(p, ev({ target_program: "online_mba" }))
+      .step(spec, state({ turns: [turn("agent", "hi"), turn("lead", "the online one")] }));
+    expect(p.plan).not.toHaveBeenCalled();
+    expect(actions.map((a) => a.kind)).not.toContain("move");
   });
 });

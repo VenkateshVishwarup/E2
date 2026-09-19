@@ -1,6 +1,7 @@
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { parseMetric, type MetricAst } from "../metrics/predicate.js";
+import { MOVES, type Move } from "./moves.js";
 
 export type TypeExpr =
   | { kind: "enum"; values: string[] }
@@ -45,6 +46,48 @@ const routeRule = z.object({
   sla: z.string().optional(),
 });
 
+/**
+ * How the agent decides what to do next.
+ *
+ * `scripted` is the original behaviour and stays the default: the runtime walks
+ * the evidence contract in a fixed order and the model only writes the wording
+ * of a question whose subject was already chosen in code. Predictable, cheap,
+ * auditable — and unable to answer a question, handle an objection, or notice
+ * that a lead has stopped cooperating.
+ *
+ * `open` moves that decision to the model. It chooses a move from a declared
+ * repertoire and says why; the guardrail then admits the choice or overrides it.
+ * The path becomes non-deterministic. What the agent is PERMITTED to do does not.
+ */
+const strategyBlock = z.object({
+  kind: z.enum(["scripted", "open"]).default("scripted"),
+  /** The subset of the repertoire this journey allows. */
+  moves: z.array(z.enum(MOVES)).min(1).default([...MOVES]),
+  /**
+   * Whether the agent may end a conversation before required evidence is
+   * complete. Off by default: a model that finds a conversation awkward will
+   * reach for the exit, and an early close looks identical in the log to a lead
+   * who answered everything.
+   */
+  allow_unscripted_close: z.boolean().default(false),
+  /**
+   * How many turns in a row the agent may spend not collecting anything.
+   * Without a cap an open agent and a chatty lead will talk pleasantly forever,
+   * and every one of those turns is billed.
+   */
+  max_deflections: z.number().int().nonnegative().default(2),
+  /**
+   * How hard the planner deliberates before choosing a move.
+   *
+   * Reasoning effort rather than temperature: the models this runs on reject a
+   * temperature parameter outright, and effort is the knob that actually trades
+   * cost against judgement. `low` is roughly the price of the question-writing
+   * call it replaces; `high` is where a planner starts noticing that a lead has
+   * answered a different question than the one it asked.
+   */
+  reasoning_effort: z.enum(["low", "medium", "high"]).default("medium"),
+}).default({});
+
 const rawSpec = z.object({
   journey: z.string().min(1),
   version: z.number().int().positive(),
@@ -64,6 +107,17 @@ const rawSpec = z.object({
   // placeholders it contains. Branding belongs to the spec author; a lead's
   // own details are supplied per conversation.
   pinned: z.record(z.union([z.string(), z.record(z.string())])).default({}),
+  strategy: strategyBlock,
+  /**
+   * The only facts the agent is allowed to state. Keyed by topic; the value is
+   * sent as written.
+   *
+   * This is what makes an open agent shippable. The move it chooses is the
+   * model's; the words of a factual answer are the tenant's. An open agent with
+   * an empty knowledge block can hold a conversation and cannot assert anything,
+   * which is the correct default for a journey nobody has briefed yet.
+   */
+  knowledge: z.record(z.string()).default({}),
   scoring: z.object({ weights: z.record(z.number()) }),
   routing: z.record(routeRule),
   tools: z.array(z.object({ capability: z.string().min(1), binding: z.string().min(1) })),
@@ -154,6 +208,39 @@ export function requiredEvidenceFields(spec: JourneySpec): string[] {
   return Object.entries(spec.evidence).filter(([, d]) => d.required).map(([f]) => f);
 }
 
+/** True when the model, not `nextField()`, chooses what happens next. */
+export function isOpen(spec: JourneySpec): boolean {
+  return spec.strategy.kind === "open";
+}
+
+export function allowedMoves(spec: JourneySpec): Move[] {
+  return [...spec.strategy.moves];
+}
+
+export function moveAllowed(spec: JourneySpec, move: string): move is Move {
+  return (spec.strategy.moves as readonly string[]).includes(move);
+}
+
+/** The fact behind a knowledge key, or undefined if the journey never declared one. */
+export function knowledgeEntry(spec: JourneySpec, key: string): string | undefined {
+  return spec.knowledge[key];
+}
+
+export function knowledgeKeys(spec: JourneySpec): string[] {
+  return Object.keys(spec.knowledge);
+}
+
+/**
+ * Anything that looks like a quoted amount.
+ *
+ * Deliberately broad, and only ever applied to text the MODEL wrote — a journey
+ * whose policy forbids quoting fees may still declare a fee in `knowledge`,
+ * because that text is the tenant's own and is sent verbatim. The rule exists to
+ * stop the agent improvising a number around it.
+ */
+export const FIGURE =
+  /(?:[$£€₹]\s?\d|(?:USD|INR|EUR|GBP|Rs\.?)\s?\d|\d[\d,.]*\s?(?:%|k\b|L\b|lakhs?|crores?|cr\b|USD|INR|EUR|GBP))/i;
+
 /**
  * The evidence block IS a JSON Schema. This is why Approach B works and a
  * prompt-based approach cannot: the API guarantees conformance.
@@ -200,7 +287,11 @@ export interface SpecWarning {
     | "unreachable_weight"
     | "unparseable_metric"
     | "unreachable_metric"
-    | "unresolvable_template_variable";
+    | "unresolvable_template_variable"
+    | "unanswerable_open_journey"
+    | "unusable_move"
+    | "inert_knowledge"
+    | "knowledge_contradicts_policy";
   message: string;
 }
 
@@ -251,6 +342,75 @@ export function lintSpec(spec: JourneySpec): SpecWarning[] {
   }
   warnings.push(...lintMetrics(spec));
   warnings.push(...lintPinned(spec));
+  warnings.push(...lintStrategy(spec));
+  return warnings;
+}
+
+/**
+ * An open journey's moves are only as real as what backs them.
+ *
+ * A move the guardrail can never admit is worse than an absent one: the planner
+ * keeps proposing it, the override fires every time, and the log fills with a
+ * disagreement the author never intended.
+ */
+function lintStrategy(spec: JourneySpec): SpecWarning[] {
+  const warnings: SpecWarning[] = [];
+  const moves = new Set(spec.strategy.moves);
+  const knowledge = knowledgeKeys(spec);
+
+  if (isOpen(spec)) {
+    if (moves.has("answer") && knowledge.length === 0) {
+      warnings.push({
+        code: "unanswerable_open_journey",
+        message:
+          'strategy allows the "answer" move but `knowledge` is empty. The agent may only ' +
+          "state declared facts, so every question it decides to answer will be overridden " +
+          "into a deflection. Declare the facts it should be able to give, or drop the move.",
+      });
+    }
+    if (moves.has("offer") && spec.tools.length === 0) {
+      warnings.push({
+        code: "unusable_move",
+        message:
+          'strategy allows the "offer" move but the journey declares no tools. There is ' +
+          "nothing for the agent to offer to do.",
+      });
+    }
+    if (moves.size === 1 && moves.has("ask")) {
+      warnings.push({
+        code: "unusable_move",
+        message:
+          'strategy is "open" but "ask" is the only permitted move, which is what "scripted" ' +
+          "already does — at the cost of an extra model call per turn to arrive at the same " +
+          "decision.",
+      });
+    }
+  } else if (knowledge.length > 0) {
+    warnings.push({
+      code: "inert_knowledge",
+      message:
+        `knowledge declares ${knowledge.length} fact(s) (${knowledge.join(", ")}) but the ` +
+        'strategy is "scripted", which never answers a question. The block has no effect ' +
+        "until the strategy is open.",
+    });
+  }
+
+  // The tenant's own text wins over their own policy rule, and an author who
+  // wrote both probably did not realise they had.
+  if (spec.policy.never.includes("quote_exact_fees")) {
+    const quoting = Object.entries(spec.knowledge)
+      .filter(([, text]) => FIGURE.test(text))
+      .map(([key]) => key);
+    if (quoting.length > 0) {
+      warnings.push({
+        code: "knowledge_contradicts_policy",
+        message:
+          `policy forbids quote_exact_fees, but knowledge.${quoting.join(", knowledge.")} ` +
+          "contains a figure. Declared knowledge is sent as written and wins; the policy " +
+          "rule still stops the agent putting a figure in its own framing.",
+      });
+    }
+  }
   return warnings;
 }
 

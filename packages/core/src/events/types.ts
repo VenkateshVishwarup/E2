@@ -9,6 +9,10 @@ export const EVENT_TYPES = [
   "LeadIngested", "MessageSent", "MessageReceived", "EvidenceExtracted",
   "PolicyEvaluated", "ToolInvoked", "AuthorizationDenied", "Scored", "Routed",
   "HandoffCreated", "NurtureScheduled", "OutcomeObserved", "CostObserved",
+  // An open-strategy agent's choice of what to do next, and whether the
+  // guardrail let it. Recorded for the same reason `AuthorizationDenied` is: a
+  // decision nobody can read afterwards is not a decision anyone will trust.
+  "MoveChosen",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -46,6 +50,26 @@ export interface StoredEvent {
 
 export interface Turn { role: "agent" | "lead"; text: string; at: Date }
 
+/**
+ * One planner decision, as folded back out of the log.
+ *
+ * `proposed` and `move` differ exactly when the guardrail intervened, so the
+ * pair is the whole audit trail: what the model wanted, what it was allowed, and
+ * which rule made the difference.
+ */
+export interface MoveRecord {
+  /** What was actually performed. */
+  move: string;
+  /** What the planner asked for. Equal to `move` when nothing intervened. */
+  proposed: string;
+  overridden: boolean;
+  /** The guardrail rule that fired, or null when the proposal stood. */
+  rule: string | null;
+  /** The planner's own one-line reason, in its words. */
+  rationale: string;
+  at: Date;
+}
+
 export interface OutcomePayload {
   outcome: "attended" | "applied" | "enrolled" | "paid";
   amount?: number;
@@ -61,4 +85,9 @@ export interface LeadState {
   score?: number;
   decision?: string;
   outcomes: OutcomePayload[];
+  /**
+   * Planner decisions in order. Empty for a scripted journey, which makes no
+   * decisions worth recording — its path is in the code.
+   */
+  moves: MoveRecord[];
 }

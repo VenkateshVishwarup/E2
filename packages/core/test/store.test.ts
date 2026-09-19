@@ -153,3 +153,31 @@ describe("EventStore.appendMany at scale", () => {
     expect((await pool.query("SELECT count(*)::int n FROM events")).rows[0].n).toBe(0);
   });
 });
+
+describe("EventStore.fold — planner decisions", () => {
+  it("accumulates moves in order, with the override that shaped each one", async () => {
+    await store.appendMany([
+      { ...base, journeyVersion: 7, leadId: "L9", type: "MoveChosen",
+        payload: { move: "answer", proposed: "answer", overridden: false, rule: null,
+                   rationale: "they asked about intakes", confidence: 0.9 } },
+      { ...base, journeyVersion: 7, leadId: "L9", type: "MoveChosen",
+        payload: { move: "ask", proposed: "close", overridden: true,
+                   rule: "close_without_required_evidence", rationale: "felt finished",
+                   confidence: 0.6 } },
+    ]);
+
+    const state = await store.fold("L9");
+    expect(state.moves).toHaveLength(2);
+    expect(state.moves[0]).toMatchObject({ move: "answer", overridden: false, rule: null });
+    expect(state.moves[1]).toMatchObject({
+      move: "ask", proposed: "close", overridden: true,
+      rule: "close_without_required_evidence",
+    });
+  });
+
+  it("leaves moves empty for a scripted conversation", async () => {
+    await store.append({ ...base, leadId: "L10", type: "MessageSent",
+      payload: { channel: "web", renderedText: "hello" } });
+    expect((await store.fold("L10")).moves).toEqual([]);
+  });
+});

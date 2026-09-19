@@ -33,6 +33,28 @@
         "@midfunnel/web"
       ],
       "port": 3000
+    },
+    {
+      "name": "api-alt",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "start:alt",
+        "-w",
+        "@midfunnel/web"
+      ],
+      "port": 3002
+    },
+    {
+      "name": "console-alt",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:alt",
+        "-w",
+        "@midfunnel/console"
+      ],
+      "port": 5174
     }
   ]
 }

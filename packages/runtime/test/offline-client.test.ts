@@ -18,7 +18,7 @@ describe("offlineClient", () => {
     // so only simulation hit it.
     const state: LeadState = {
       leadId: "sim_1", journey: spec.journey, journeyVersion: 4,
-      evidence: {}, outcomes: [],
+      evidence: {}, outcomes: [], moves: [],
       turns: [
         { role: "agent", text: "Hi", at: new Date() },
         { role: "lead", text: "executive_mba", at: new Date() },

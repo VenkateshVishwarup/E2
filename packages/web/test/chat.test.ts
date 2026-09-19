@@ -9,6 +9,7 @@ import { JourneyRegistry } from "@midfunnel/core/journey/registry";
 import { AgentRuntime } from "@midfunnel/runtime/step";
 import { KeywordExtractor } from "@midfunnel/runtime/keyword-extractor";
 import { offlineClient } from "@midfunnel/runtime/offline-client";
+import { parseSpec } from "@midfunnel/core/journey/spec";
 import { ChatService } from "../src/chat-service.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -204,5 +205,55 @@ describe("cost", () => {
     // No CostObserved is written at all, rather than a zero-valued one.
     const costs = await store.query({ leadId: state.leadId, type: "CostObserved" });
     expect(costs).toHaveLength(0);
+  });
+});
+
+describe("ChatService — how a conversation ends", () => {
+  const SPEC = parseSpec(V4);
+
+  /**
+   * Talks until the conversation ends, or until well past the turn budget.
+   *
+   * The cap is a guard rather than the expectation: a loop that relies on the
+   * exact turn arithmetic would pass for the wrong reason the moment the budget
+   * check moves.
+   */
+  const talkUntilDone = async (leadId: string, say: string) => {
+    for (let i = 0; i < SPEC.policy.max_turns + 2; i++) {
+      const { state } = await chat.send(leadId, say);
+      if (state.endedReason !== null) return state;
+    }
+    throw new Error("conversation never ended");
+  };
+
+  it("reports a live conversation as not ended", async () => {
+    const { state } = await chat.start({ journey: JOURNEY, version: 4 });
+    expect(state.endedReason).toBeNull();
+  });
+
+  it("routes a lead whose evidence is complete, however the conversation ended", async () => {
+    // Discarding a fully-qualified lead over a turn count throws away the thing
+    // the journey exists to produce.
+    const { state } = await chat.start({ journey: JOURNEY, version: 4 });
+    const end = await talkUntilDone(
+      state.leadId, "executive mba, this intake, 5L to 15L, decided by self");
+    expect(end.endedReason).toBe("routed");
+    expect(end.decision).not.toBeNull();
+    expect(end.score).not.toBeNull();
+  });
+
+  it("ends an inconclusive conversation without inventing a decision", async () => {
+    const { state } = await chat.start({ journey: JOURNEY, version: 4 });
+    const end = await talkUntilDone(state.leadId, "not sure yet");
+    expect(end.endedReason).toBe("turn_budget");
+    expect(end.decision).toBeNull();
+    expect(end.score).toBeNull();
+  });
+
+  it("reports an escalation as an escalation, not as out of turns", async () => {
+    const { state } = await chat.start({ journey: JOURNEY, version: 4 });
+    const { state: end } = await chat.send(state.leadId, "put me through to a human");
+    expect(end.endedReason).toBe("escalated");
+    expect(end.escalationRule).toBe("asks_for_human");
   });
 });

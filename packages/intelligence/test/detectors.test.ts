@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   evidenceBottleneck, segmentDivergence, dropOff, routingMiscalibration,
-  timing, policyFriction, versionRegression, type DetectorContext,
+  timing, policyFriction, versionRegression, strategyFriction, type DetectorContext,
 } from "../src/insights/detectors.js";
 import { MIN_SUPPORT } from "../src/insights/types.js";
 import type { LeadView } from "../src/insights/view.js";
@@ -19,7 +19,8 @@ function view(over: Partial<LeadView> = {}): LeadView {
     leadId: `L${Math.random()}`, journeyVersion: 4, campaignId: "camp_0", creativeId: "cr_0",
     evidence: {}, missingRequired: [], turns: [], leadReplies: 1,
     score: 50, decision: "warm", completed: true, qualified: false, converted: false,
-    policyFired: [], firstContactAt: new Date("2026-06-01T04:30:00Z"), repliedAfterPolicy: null,
+    policyFired: [], moves: [], firstContactAt: new Date("2026-06-01T04:30:00Z"),
+    repliedAfterPolicy: null,
     ...over,
   };
 }
@@ -226,5 +227,89 @@ describe("segmentDivergence deduplication", () => {
     ];
     const dims = segmentDivergence(views, CTX).findings.map((f) => f.evidence.dimension);
     expect(new Set(dims).size).toBe(dims.length);
+  });
+});
+
+describe("strategyFriction", () => {
+  const decision = (over: Partial<LeadView["moves"][number]> = {}) => ({
+    move: "ask", proposed: "ask", overridden: false, rule: null, ...over,
+  });
+  const refused = (rule: string, proposed = "answer") =>
+    decision({ move: "ask", proposed, overridden: true, rule });
+
+  const open = (moves: LeadView["moves"], over: Partial<LeadView> = {}) => view({ moves, ...over });
+  const many = (n: number, moves: LeadView["moves"], over: Partial<LeadView> = {}) =>
+    Array.from({ length: n }, () => open(moves, over));
+
+  it("skips a scripted cohort rather than reporting nothing found", () => {
+    // Silence would look like a clean bill of health on a version that cannot
+    // produce this finding at all.
+    const r = strategyFriction(many(MIN_SUPPORT * 2, []), CTX);
+    expect(r.findings).toEqual([]);
+    expect(r.skipped).toMatch(/no open-strategy conversations/i);
+  });
+
+  it("skips below the support bar", () => {
+    const r = strategyFriction(many(5, [refused("answer_without_knowledge")]), CTX);
+    expect(r.skipped).toMatch(/only 5/);
+  });
+
+  it("says so when the guardrail never fired", () => {
+    const r = strategyFriction(many(MIN_SUPPORT * 2, [decision(), decision()]), CTX);
+    expect(r.findings).toEqual([]);
+    expect(r.skipped).toMatch(/admitted all/i);
+  });
+
+  it("reports the override rate and the rule doing most of the refusing", () => {
+    const views = [
+      ...many(40, [decision(), refused("answer_without_knowledge"), refused("answer_without_knowledge")]),
+      ...many(40, [decision(), decision(), decision()]),
+    ];
+    const [f] = strategyFriction(views, CTX).findings;
+    expect(f!.code).toBe("strategy_friction");
+    // 80 overrides out of 240 decisions.
+    expect(f!.claim).toMatch(/33\.3% of turns/);
+    expect(f!.claim).toMatch(/answer_without_knowledge/);
+    expect(f!.evidence.byRule).toEqual({ answer_without_knowledge: 80 });
+  });
+
+  it("names what the agent was reaching for, not only what was blocked", () => {
+    const views = many(MIN_SUPPORT * 2, [decision(), refused("offer_without_privilege", "offer")]);
+    const [f] = strategyFriction(views, CTX).findings;
+    expect(f!.detail).toMatch(/reaching for: offer/);
+    expect(f!.suggestion).toMatch(/agent\.privileges/);
+  });
+
+  it("gives the rule's own remedy rather than a generic one", () => {
+    const views = many(MIN_SUPPORT * 2, [refused("close_without_required_evidence", "close")]);
+    expect(strategyFriction(views, CTX).findings[0]!.suggestion)
+      .toMatch(/end conversations early/i);
+  });
+
+  it("escalates severity with the override rate", () => {
+    const heavy = many(MIN_SUPPORT * 2, [refused("deflections_exhausted")]);
+    expect(strategyFriction(heavy, CTX).findings[0]!.severity).toBe("high");
+
+    const light = many(MIN_SUPPORT * 2, [
+      refused("deflections_exhausted"), ...Array.from({ length: 19 }, () => decision()),
+    ]);
+    expect(strategyFriction(light, CTX).findings[0]!.severity).toBe("low");
+  });
+
+  it("carries an interval when both groups are big enough to compare", () => {
+    const views = [
+      ...many(40, [refused("answer_without_knowledge")], { converted: false }),
+      ...many(40, [decision()], { converted: true }),
+    ];
+    expect(strategyFriction(views, CTX).findings[0]!.ci95).toBeDefined();
+  });
+
+  it("says the conversion comparison is unavailable rather than implying one", () => {
+    // Every conversation was refused, so there is no clean group to compare to.
+    // Reporting a diff against nothing would be the more dangerous output.
+    const views = many(MIN_SUPPORT * 2, [refused("answer_without_knowledge")]);
+    const [f] = strategyFriction(views, CTX).findings;
+    expect(f!.ci95).toBeUndefined();
+    expect(f!.detail).toMatch(/Too few conversations/i);
   });
 });

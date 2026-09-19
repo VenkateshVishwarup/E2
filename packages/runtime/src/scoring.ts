@@ -117,3 +117,36 @@ export function qualifies(spec: JourneySpec, s: number, evidence: Evidence): boo
     evidenceComplete: evidenceComplete(spec, evidence),
   });
 }
+
+/** Fields with nothing established, in declaration order. */
+export function missingFields(spec: JourneySpec, evidence: Evidence): string[] {
+  return Object.keys(spec.evidence).filter((f) => !established(evidence, f));
+}
+
+export function established(evidence: Evidence, field: string): boolean {
+  const got = evidence[field];
+  return got !== undefined && got.value !== null && got.value !== undefined;
+}
+
+/**
+ * Which field a scripted journey asks for next: required before optional, and a
+ * `sensitive` field is never asked while nothing at all is established — you do
+ * not open with money.
+ *
+ * Lives here rather than in `step()` because the guardrail needs the same answer.
+ * When an open agent's proposed `ask` is rejected, the fallback must be the field
+ * the scripted strategy would have chosen, or the two strategies stop being
+ * comparable at exactly the moments that matter.
+ *
+ * Returns null when nothing is left to ask for.
+ */
+export function nextField(spec: JourneySpec, evidence: Evidence): string | null {
+  const missing = missingFields(spec, evidence);
+  if (missing.length === 0) return null;
+  const nothingEstablished = Object.keys(evidence).length === 0;
+
+  const eligible = missing.filter((f) => !(spec.evidence[f]!.sensitive && nothingEstablished));
+  const pool = eligible.length > 0 ? eligible : missing;
+
+  return pool.find((f) => spec.evidence[f]!.required) ?? pool[0]!;
+}

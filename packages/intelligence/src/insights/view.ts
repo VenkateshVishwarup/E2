@@ -20,6 +20,11 @@ export interface LeadView {
   converted: boolean;
   /** Rule ids that fired, in order. */
   policyFired: string[];
+  /**
+   * Planner decisions, for an open-strategy conversation. Empty for a scripted
+   * one, which makes none.
+   */
+  moves: Array<{ move: string; proposed: string; overridden: boolean; rule: string | null }>;
   firstContactAt: Date | null;
   /** True when the lead replied at least once after policy fired, or at all. */
   repliedAfterPolicy: boolean | null;
@@ -83,6 +88,12 @@ function view(
     qualified: Boolean(metrics.booleans[names.qualified]),
     converted: Boolean(metrics.booleans[names.conversion]),
     policyFired: policyEvents.map((e) => String(e.payload.ruleId)),
+    moves: events.filter((e) => e.type === "MoveChosen").map((e) => ({
+      move: String(e.payload.move ?? ""),
+      proposed: String(e.payload.proposed ?? e.payload.move ?? ""),
+      overridden: Boolean(e.payload.overridden),
+      rule: e.payload.rule == null ? null : String(e.payload.rule),
+    })),
     firstContactAt: events.find((e) => e.type === "MessageSent")?.occurredAt
       ?? ingested?.occurredAt ?? null,
     repliedAfterPolicy: firstPolicyAt === null

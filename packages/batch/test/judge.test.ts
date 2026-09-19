@@ -12,7 +12,7 @@ const spec = parseSpec(readFileSync(join(HERE, "../../core/test/fixtures/mba-v4.
 
 const state: LeadState = {
   leadId: "sim_1", journey: spec.journey, journeyVersion: 4,
-  evidence: {}, outcomes: [],
+  evidence: {}, outcomes: [], moves: [],
   turns: [
     { role: "agent", text: "Hi, which programme are you considering?", at: new Date() },
     { role: "lead", text: "executive mba", at: new Date() },

@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSpec, parseTypeExpr, evidenceToJsonSchema, lintSpec, requiredEvidenceFields,
-  renderPinned, pinnedDefaults, pinnedText }
+  renderPinned, pinnedDefaults, pinnedText, isOpen, allowedMoves, knowledgeKeys,
+  knowledgeEntry }
   from "../src/journey/spec.js";
+import { MOVES } from "../src/journey/moves.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const yaml = readFileSync(join(HERE, "fixtures/mba-v4.yaml"), "utf8");
@@ -160,5 +162,93 @@ describe("pinned template variables", () => {
   it("does not flag a variable the runtime supplies", () => {
     const codes = lintSpec(parseSpec(yaml)).map((w) => w.code);
     expect(codes).not.toContain("unresolvable_template_variable");
+  });
+});
+
+// ─── Conversation strategy ───────────────────────────────────────────────────
+
+const openYaml = readFileSync(join(HERE, "fixtures/mba-v7-open.yaml"), "utf8");
+
+describe("strategy", () => {
+  it("defaults to scripted, so every existing journey behaves as before", () => {
+    const s = parseSpec(yaml);
+    expect(s.strategy.kind).toBe("scripted");
+    expect(isOpen(s)).toBe(false);
+  });
+
+  it("defaults to the whole repertoire, not to a subset someone has to remember", () => {
+    expect(parseSpec(yaml).strategy.moves.sort()).toEqual([...MOVES].sort());
+  });
+
+  it("defaults to refusing an early close", () => {
+    // A model that finds a conversation awkward reaches for the exit.
+    expect(parseSpec(yaml).strategy.allow_unscripted_close).toBe(false);
+  });
+
+  it("reads an open journey's declared repertoire and knowledge", () => {
+    const s = parseSpec(openYaml);
+    expect(isOpen(s)).toBe(true);
+    expect(allowedMoves(s)).toContain("answer");
+    expect(knowledgeKeys(s)).toContain("scholarships");
+    expect(knowledgeEntry(s, "intakes")).toMatch(/twice a year/);
+  });
+
+  it("rejects a move the repertoire does not contain", () => {
+    expect(() => parseSpec(openYaml.replace("moves: [ask,", "moves: [improvise,")))
+      .toThrow();
+  });
+
+  it("rejects an empty repertoire — an agent with no moves is not an agent", () => {
+    expect(() => parseSpec(openYaml.replace(
+      "  moves: [ask, answer, acknowledge, offer, close, escalate]", "  moves: []",
+    ))).toThrow();
+  });
+});
+
+describe("lintSpec — strategy", () => {
+  const codes = (y: string) => lintSpec(parseSpec(y)).map((w) => w.code);
+
+  it("passes the reference open journey", () => {
+    // Apart from the unreachable-qualification warning it inherits from v4, which
+    // is a property of the shared weights rather than of the strategy.
+    expect(codes(openYaml).filter((c) => c !== "unreachable_qualification")).toEqual([]);
+  });
+
+  it("warns when an open journey may answer but declares no facts", () => {
+    const blind = openYaml.replace(/^knowledge:\n(?:  .*\n|\n)*?(?=^policy:)/m, "knowledge: {}\n");
+    expect(parseSpec(blind).knowledge).toEqual({});
+    expect(codes(blind)).toContain("unanswerable_open_journey");
+  });
+
+  it("warns when the offer move has no tool behind it", () => {
+    const toolless = openYaml.replace(/^tools:\n(?:  .*\n)*/m, "tools: []\n");
+    expect(codes(toolless)).toContain("unusable_move");
+  });
+
+  it("warns when an open journey can only ask, which is what scripted already does", () => {
+    const pointless = openYaml.replace(
+      "  moves: [ask, answer, acknowledge, offer, close, escalate]", "  moves: [ask]",
+    );
+    expect(codes(pointless)).toContain("unusable_move");
+  });
+
+  it("warns that a scripted journey's knowledge block is inert", () => {
+    const mixed = openYaml.replace("  kind: open", "  kind: scripted");
+    expect(codes(mixed)).toContain("inert_knowledge");
+  });
+
+  it("warns when declared knowledge quotes a figure the policy forbids", () => {
+    // Declared knowledge wins — the author should know they wrote both.
+    const quoting = openYaml.replace(
+      "  fees: >-", "  fees: The fee is ₹12.5 lakh.\n  unused_fees: >-",
+    );
+    expect(codes(quoting)).toContain("knowledge_contradicts_policy");
+  });
+
+  it("does not warn about a figure when the policy permits quoting", () => {
+    const quoting = openYaml
+      .replace("    - quote_exact_fees\n", "")
+      .replace("  fees: >-", "  fees: The fee is ₹12.5 lakh.\n  unused_fees: >-");
+    expect(codes(quoting)).not.toContain("knowledge_contradicts_policy");
   });
 });

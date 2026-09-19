@@ -5,3 +5,4 @@ dist/
 .neon
 .vercel
 .env*
+.DS_Store

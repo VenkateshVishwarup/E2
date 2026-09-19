@@ -969,7 +969,7 @@ components:
 
     JourneyVersionList:
       type: object
-      required: [versions]
+      required: [versions, strategies]
       additionalProperties: false
       properties:
         versions:
@@ -979,9 +979,23 @@ components:
             type: integer
             minimum: 1
             example: 4
-          example: [5, 4, 3]
+          example: [7, 5, 4, 3]
+        strategies:
+          type: object
+          description: |
+            Which conversation strategy each version runs, keyed by version number.
+            `scripted` walks the evidence contract in a fixed order; `open` lets the
+            agent choose its own next move, subject to the guardrail. Reported
+            alongside `versions` rather than instead of it, so a client that only
+            needs the list is unaffected. A version whose spec will not parse is
+            reported as `scripted` rather than failing the list.
+          additionalProperties:
+            type: string
+            enum: [scripted, open]
+          example: { "7": open, "5": scripted, "4": scripted, "3": scripted }
       example:
-        versions: [5, 4, 3]
+        versions: [7, 5, 4, 3]
+        strategies: { "7": open, "5": scripted, "4": scripted, "3": scripted }
 
     SpecChange:
       type: object
@@ -1105,6 +1119,82 @@ components:
           type: string
           format: date-time
           example: "2026-09-05T09:14:02.117Z"
+        move:
+          allOf:
+            - $ref: "#/components/schemas/MoveView"
+          description: |
+            The decision that produced this agent turn, for an open-strategy version.
+            Taken from the order of the log — a `MoveChosen` is written immediately
+            before the `MessageSent` it explains — rather than inferred by pairing
+            counts, which would go wrong for any conversation containing a turn that
+            sent nothing. Absent on lead turns, on the pinned opening, and on every
+            turn of a scripted conversation.
+      example:
+        role: agent
+        text: Happy to explain. There are merit scholarships and employer-sponsorship routes.
+        at: "2026-09-05T09:14:34.882Z"
+        move:
+          move: answer
+          proposed: answer
+          overridden: false
+          rule: null
+          rationale: the lead asked about scholarships and a declared fact covers it
+          at: "2026-09-05T09:14:34.611Z"
+
+    MoveView:
+      type: object
+      description: |
+        One decision an open-strategy agent made, and what the guardrail did with it.
+
+        `proposed` and `move` differ exactly when the guardrail intervened, so the pair
+        is the whole audit trail: what the model wanted, what it was allowed, and which
+        rule made the difference. Absent entirely for a `scripted` version, which makes
+        no decisions worth recording — its path is in the code.
+      required: [move, proposed, overridden, rule, rationale, at]
+      additionalProperties: false
+      properties:
+        move:
+          type: string
+          enum: [ask, answer, acknowledge, offer, close, escalate]
+          description: What was actually performed.
+          example: acknowledge
+        proposed:
+          type: string
+          enum: [ask, answer, acknowledge, offer, close, escalate]
+          description: What the planner asked for. Equal to `move` when nothing intervened.
+          example: answer
+        overridden:
+          type: boolean
+          description: True when the guardrail refused or altered the proposal.
+          example: true
+        rule:
+          type: string
+          nullable: true
+          enum:
+            [move_not_permitted, close_without_required_evidence, answer_without_knowledge,
+             answer_quoted_a_figure, ask_unknown_field, ask_already_established,
+             ask_sensitive_too_early, offer_without_privilege, offer_without_binding,
+             deflections_exhausted, empty_message, null]
+          description: |
+            The guardrail rule that fired, from a closed set, or null when the proposal
+            stood. Named rather than generic, because "the guardrail blocked it" is not
+            something anyone can act on — and because a named rule can be counted.
+          example: answer_without_knowledge
+        rationale:
+          type: string
+          description: The planner's own one-line reason, recorded verbatim.
+          example: the lead asked a question no declared knowledge entry covers
+        at:
+          type: string
+          format: date-time
+          example: "2026-09-05T09:14:05.220Z"
+      example:
+        move: acknowledge
+        proposed: answer
+        overridden: true
+        rule: answer_without_knowledge
+        rationale: the lead asked a question no declared knowledge entry covers
+        at: "2026-09-05T09:14:05.220Z"
 
     EvidenceView:
       type: object
@@ -1140,7 +1230,7 @@ components:
     ChatState:
       type: object
       required:
-        [leadId, journey, version, turns, evidence, missingRequired, score, decision, metrics, completed, escalated, escalationRule, modelCost, currency, offline]
+        [leadId, journey, version, strategy, turns, evidence, missingRequired, score, decision, metrics, completed, escalated, escalationRule, endedReason, moves, modelCost, currency, offline]
       additionalProperties: false
       properties:
         leadId:
@@ -1153,6 +1243,15 @@ components:
           type: integer
           minimum: 1
           example: 5
+        strategy:
+          type: string
+          enum: [scripted, open]
+          description: |
+            Which conversation strategy this version runs. `scripted` walks the evidence
+            contract in a fixed order, so the same conversation always goes the same way.
+            `open` lets the agent choose its own next move each turn, so two identical
+            conversations may diverge — and every choice appears in `moves`.
+          example: open
         turns:
           type: array
           items:
@@ -1201,6 +1300,28 @@ components:
           nullable: true
           description: The declared rule that fired, when one did.
           example: evidence.budget_band == needs_financing
+        endedReason:
+          type: string
+          nullable: true
+          enum: [routed, escalated, turn_budget, null]
+          description: |
+            Why the conversation is over, or null while it is still going.
+
+            `completed` alone says "a decision was reached", which is not the same as
+            "this is finished": a conversation that exhausts its turn budget without
+            establishing required evidence reaches no decision and is still over. Clients
+            should gate the reply box on this rather than on `completed`.
+          example: routed
+        moves:
+          type: array
+          description: |
+            Every decision the planner made, in order. Empty for a `scripted` version.
+
+            Overlaps with the `move` on each agent turn, deliberately: a `close` or an
+            `escalate` sends no message, so there is no turn for it to hang on — and those
+            are the two decisions a reviewer most wants to find.
+          items:
+            $ref: "#/components/schemas/MoveView"
         modelCost:
           type: integer
           minimum: 0
@@ -1221,10 +1342,22 @@ components:
       example:
         leadId: web_3f9a21c07b4e6d15
         journey: mba-admissions-qualification
-        version: 5
+        version: 7
+        strategy: open
         turns:
           - { role: agent, text: "Hi, I'm an AI assistant from the admissions team.", at: "2026-09-05T09:14:02.117Z" }
-          - { role: lead, text: "Executive MBA, this intake", at: "2026-09-05T09:14:31.004Z" }
+          - { role: lead, text: "What are the scholarships like?", at: "2026-09-05T09:14:31.004Z" }
+          - role: agent
+            text: "Happy to explain. There are merit scholarships and employer-sponsorship routes, and the admissions team assesses eligibility case by case."
+            at: "2026-09-05T09:14:34.882Z"
+            move:
+              move: answer
+              proposed: answer
+              overridden: false
+              rule: null
+              rationale: the lead asked about scholarships and a declared fact covers it
+              at: "2026-09-05T09:14:34.611Z"
+          - { role: lead, text: "Executive MBA, this intake", at: "2026-09-05T09:15:02.400Z" }
         evidence:
           - { field: target_program, required: true, value: executive_mba, confidence: 0.95, sensitive: false }
           - { field: timeline, required: true, value: this_intake, confidence: 0.9, sensitive: false }
@@ -1236,6 +1369,14 @@ components:
         completed: false
         escalated: false
         escalationRule: null
+        endedReason: null
+        moves:
+          - move: answer
+            proposed: answer
+            overridden: false
+            rule: null
+            rationale: the lead asked about scholarships and a declared fact covers it
+            at: "2026-09-05T09:14:34.611Z"
         modelCost: 214
         currency: INR
         offline: false

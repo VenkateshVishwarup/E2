@@ -4,7 +4,7 @@ import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import type { LeadState } from "@midfunnel/core/events/types";
 import type { AgentRuntime } from "@midfunnel/runtime/step";
 import { bootstrapDiffCI } from "@midfunnel/core/stats/bootstrap";
-import { requiredEvidenceFields } from "@midfunnel/core/journey/spec";
+import { isOpen, requiredEvidenceFields } from "@midfunnel/core/journey/spec";
 import { mapLimit } from "./concurrency.js";
 
 export interface ReplayOutcome {
@@ -58,6 +58,15 @@ export interface Lift {
   divergent: Divergence[];
   /** What this replay actually cost in model calls, so the number is not a guess. */
   cost: ReplayCost;
+  /**
+   * Things this particular comparison cannot see.
+   *
+   * Reported rather than left to the reader, because the dangerous failure here
+   * is not a wrong number — it is a correct number answering a different question
+   * than the one being asked. A replay that shows no difference between two
+   * versions looks like evidence of no effect.
+   */
+  caveats: string[];
 }
 
 const CONVERTED = new Set(["enrolled", "paid"]);
@@ -165,6 +174,7 @@ export class ReplayEngine {
       observedConversionByDecision: observed,
       divergent,
       cost: { ...cost, usd: round4(this.spend()) },
+      caveats: caveatsFor(specA, specB),
     };
   }
 
@@ -189,6 +199,33 @@ export class ReplayEngine {
     }
     return { leadId: state.leadId, decision, qualified, turns: state.turns.length };
   }
+}
+
+/**
+ * What the reader must not conclude from these numbers.
+ *
+ * Replay runs two versions over transcripts that already exist. That is exactly
+ * right for a change to scoring, routing or the evidence contract, because the
+ * words the lead said do not depend on any of them. It is the wrong instrument
+ * for a change to the CONVERSATION STRATEGY: an open agent would have asked
+ * different questions, so the lead would have said different things, and the
+ * transcript on file is the scripted agent's. Both arms then settle on the same
+ * recorded evidence and report no difference — which reads as "the strategy
+ * changed nothing" when it actually means "this method cannot tell you".
+ *
+ * Simulation is the instrument for that comparison: it generates the
+ * conversation rather than replaying one.
+ */
+function caveatsFor(a: JourneySpec, b: JourneySpec): string[] {
+  if (isOpen(a) === isOpen(b)) return [];
+  const [scripted, open] = isOpen(a) ? [b, a] : [a, b];
+  return [
+    `v${scripted.version} is scripted and v${open.version} is open, but replay runs both ` +
+    `over transcripts that already exist. An open agent would have asked different ` +
+    `questions and the lead would have answered differently, so both arms settle on the ` +
+    `same recorded evidence and this comparison cannot see the strategy change. Use ` +
+    `Simulate to compare these two.`,
+  ];
 }
 
 /** Historical conversion rate per decision bucket. Pure measurement. */

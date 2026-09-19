@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { lintSpec, parseSpec } from "@midfunnel/core/journey/spec";
+import { isOpen, lintSpec, parseSpec } from "@midfunnel/core/journey/spec";
 import { statusFor, type ServerDeps } from "../deps.js";
 
 /** A question long enough to be an essay is a paste, not a question. */
@@ -49,7 +49,10 @@ export function registerIntelligenceRoutes(app: FastifyInstance, deps: ServerDep
         const spec = raw === undefined
           ? await deps.registry.latest(req.params.journey)
           : await deps.registry.get(req.params.journey, Number(raw));
-        return { journey: spec.journey, version: spec.version, warnings: lintSpec(spec) };
+        return {
+          journey: spec.journey, version: spec.version,
+          strategy: isOpen(spec) ? "open" : "scripted", warnings: lintSpec(spec),
+        };
       } catch (err) {
         return reply.code(statusFor(err)).send({ error: (err as Error).message });
       }
@@ -120,7 +123,10 @@ export function registerIntelligenceRoutes(app: FastifyInstance, deps: ServerDep
       }
       try {
         const spec = parseSpec(yaml);
-        return { valid: true, journey: spec.journey, version: spec.version, warnings: lintSpec(spec) };
+        return {
+          valid: true, journey: spec.journey, version: spec.version,
+          strategy: isOpen(spec) ? "open" : "scripted", warnings: lintSpec(spec),
+        };
       } catch (err) {
         // A spec that does not parse is a lint result, not a server error: the
         // editor needs the message to show, not a failed request.

@@ -10,6 +10,15 @@ export interface EventBase {
   runId?: string;
 }
 
+/** The planner decision this turn, when the journey runs the open strategy. */
+export interface MoveOutcome {
+  move: string;
+  proposed: string;
+  overridden: boolean;
+  rule: string | null;
+  rationale: string;
+}
+
 export interface AppliedActions {
   events: EventInput[];
   /** What the agent said this turn, or null if it said nothing. */
@@ -20,6 +29,14 @@ export interface AppliedActions {
   qualified: boolean;
   score: number | null;
   decision: string | null;
+  /** Null for a scripted journey, which makes no decision worth recording. */
+  move: MoveOutcome | null;
+  /**
+   * Tools the agent chose to use, for the caller to perform through the broker.
+   * Not events: the broker writes its own, and two authorities on one decision is
+   * how an audit trail starts disagreeing with itself.
+   */
+  invocations: Array<{ capability: string; args: Record<string, unknown> }>;
 }
 
 /**
@@ -42,6 +59,7 @@ export function actionsToEvents(
   const out: AppliedActions = {
     events, sentText: null, escalated: false, escalationRule: null,
     completed: false, qualified: false, score: null, decision: null,
+    move: null, invocations: [],
   };
 
   for (const a of actions) {
@@ -86,6 +104,25 @@ export function actionsToEvents(
       case "complete":
         out.completed = true;
         out.qualified = a.qualified;
+        break;
+
+      case "move":
+        out.move = {
+          move: a.move, proposed: a.proposed, overridden: a.overridden,
+          rule: a.rule, rationale: a.rationale,
+        };
+        events.push({ ...base, type: "MoveChosen",
+          payload: {
+            move: a.move, proposed: a.proposed, overridden: a.overridden,
+            rule: a.rule, rationale: a.rationale, confidence: a.confidence,
+            targetField: a.targetField, knowledgeKey: a.knowledgeKey,
+          } });
+        break;
+
+      // Deliberately no event: the broker is the single egress point and records
+      // both the invocation and any denial itself.
+      case "invoke":
+        out.invocations.push({ capability: a.capability, args: a.args });
         break;
     }
   }

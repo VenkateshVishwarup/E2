@@ -84,7 +84,12 @@ describe("web routes", () => {
 
   it("lists journey versions newest first", async () => {
     const res = await app.inject({ url: "/api/journeys/mba-admissions-qualification/versions" });
-    expect(res.json()).toEqual({ versions: [4, 3] });
+    expect(res.json()).toMatchObject({ versions: [4, 3] });
+  });
+
+  it("says which strategy each version runs, so a picker can label them", async () => {
+    const res = await app.inject({ url: "/api/journeys/mba-admissions-qualification/versions" });
+    expect(res.json().strategies).toEqual({ 3: "scripted", 4: "scripted" });
   });
 
   it("returns a structural diff between two versions", async () => {

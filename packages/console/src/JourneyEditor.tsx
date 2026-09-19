@@ -1,12 +1,39 @@
 import { useEffect, useRef, useState } from "react";
 import { VersionPicker } from "./VersionPicker.js";
 import { item } from "./roadmap-data.js";
+import { readStrategy, switchStrategy, type StrategyKind } from "./strategy-yaml.js";
 
 interface SpecWarning { code: string; message: string }
 interface LintResult {
   valid: boolean; journey?: string; version?: number;
+  strategy?: StrategyKind;
   error?: string; warnings: SpecWarning[];
 }
+
+/**
+ * The two kinds of agent, in the words a marketer would use.
+ *
+ * "Deterministic" and "non-deterministic" are the honest names and the ones the
+ * spec uses, but they describe the mechanism rather than the consequence. The
+ * consequence is what someone choosing between them needs.
+ */
+const STRATEGIES: Record<StrategyKind, { label: string; blurb: string }> = {
+  scripted: {
+    label: "Deterministic",
+    blurb:
+      "Works through the evidence contract in a fixed order. The same conversation " +
+      "always goes the same way, and it costs one model call a turn. It cannot answer " +
+      "a question, handle an objection, or notice that a lead has stopped cooperating.",
+  },
+  open: {
+    label: "Non-deterministic",
+    blurb:
+      "The agent picks its own next move each turn — answer, acknowledge, use a tool, " +
+      "ask, close, hand over — and says why. Two identical conversations may diverge. " +
+      "Every choice is checked against policy before it happens and recorded either way, " +
+      "so you can see what it decided and what it was not allowed to do.",
+  },
+};
 
 export function JourneyEditor({ journey, onPublished }:
   { journey: string; onPublished: () => void }) {
@@ -70,6 +97,20 @@ export function JourneyEditor({ journey, onPublished }:
     return () => clearTimeout(timer);
   }, [yaml]);
 
+  // The server's own parse is the authority on what the YAML currently says; the
+  // text is only read as a fallback while a lint request is in flight.
+  const strategy: StrategyKind = lint?.strategy ?? (yaml ? readStrategy(yaml) : "scripted");
+
+  const chooseStrategy = (kind: StrategyKind) => {
+    if (kind === strategy) return;
+    setYaml((y) => switchStrategy(y, kind));
+    setNotice(
+      `Switched to ${STRATEGIES[kind].label.toLowerCase()}. This is a change to a ` +
+      `published version, so bump the version and publish it — then try it on the ` +
+      `Chat tab before making it live.`,
+    );
+  };
+
   const bumpVersion = () => {
     setYaml((y) => y.replace(/^version:\s*(\d+)/m, (_, n: string) => `version: ${Number(n) + 1}`));
     setNotice(null);
@@ -126,6 +167,30 @@ export function JourneyEditor({ journey, onPublished }:
         edit → publish → try it → make it live, and rolling back is promoting the previous
         version.
       </p>
+
+      {/* Editing YAML is the general answer, but "can this agent go off script?"
+          is the one decision people actually want to make, and nobody should have
+          to know the block name to make it. The buttons perform the edit; the
+          YAML below remains the truth. */}
+      <div className="strategy">
+        <span className="picker-label">Agent behaviour</span>
+        <div className="strategy-choice" role="radiogroup" aria-label="Agent behaviour">
+          {(Object.keys(STRATEGIES) as StrategyKind[]).map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              role="radio"
+              aria-checked={strategy === kind}
+              className="section"
+              disabled={busy || yaml === ""}
+              onClick={() => chooseStrategy(kind)}
+            >
+              {STRATEGIES[kind].label}
+            </button>
+          ))}
+        </div>
+        <p className="muted provenance">{STRATEGIES[strategy].blurb}</p>
+      </div>
 
       {/* A dropdown whose options read "Load v4" looks like a button you have
           yet to press. It is a state control: it says which version you are
@@ -191,6 +256,18 @@ export function JourneyEditor({ journey, onPublished }:
             Warnings do not block publishing. A journey may legitimately rely on optional
             evidence a lead volunteers, and the platform should not be the judge of that.
           </p>
+
+          {/* An open journey's behaviour hinges on this block, and the connection
+              between "the agent went vague" and "nobody declared that fact" is not
+              obvious from the warning alone. */}
+          {strategy === "open" && (
+            <p className="muted provenance">
+              A non-deterministic agent may state <strong>only</strong> what
+              <code> knowledge:</code> declares, word for word. Anything else it admits it
+              does not know. That is the line between an agent that can hold a
+              conversation and one that can make things up.
+            </p>
+          )}
 
           {/* The `tools:` block is enforced but not yet connected. Say so where
               someone is editing it, not only on the roadmap. */}

@@ -1,0 +1,147 @@
+# The open-strategy twin of v4.
+#
+# Same evidence contract, same scoring, same routing, same policy — so a replay
+# against v4 isolates exactly one variable: who decides what happens next. That
+# is the whole point of shipping it as a version rather than a mode. "Is a
+# free-roaming agent better than a scripted one?" becomes a measurement instead
+# of an argument.
+journey: mba-admissions-qualification
+version: 7
+vertical: edtech
+owner: fde@engati.com
+
+agent:
+  persona: admissions_counsellor_v2
+  identity: agent://engati/mba-admissions
+  privileges:
+    - crm.upsert_lead:leads_owned_by_this_journey
+    - calendar.book_slot:counsellor_pool_mba
+    - catalog.lookup_program:read
+  data_scope:
+    read:  [lead.self, catalog.programs]
+    deny:  [lead.other_journeys, payment.instruments]
+
+objective:
+  goal: book_counselling_call
+  qualifies_when: score >= 70 AND evidence.complete(required)
+
+# Identical to v4. A replay that also changed the contract would measure two
+# things and attribute the result to whichever one the reader already believed.
+evidence:
+  target_program:
+    type: enum[executive_mba, full_time_mba, online_mba]
+    required: true
+    confidence_min: 0.8
+    description: Which programme the lead is actually considering
+    example: executive_mba
+  timeline:
+    type: enum[this_intake, next_intake, just_exploring]
+    required: true
+    confidence_min: 0.7
+    example: this_intake
+  budget_band:
+    type: enum[under_5L, 5L_to_15L, above_15L, needs_financing]
+    required: true
+    sensitive: true
+    example: 5L_to_15L
+  decision_maker:
+    type: enum[self, parent, employer]
+    required: false
+    example: employer
+  prior_qualification:
+    type: string
+    maxLength: 120
+    required: false
+    example: B.Tech, 4 years work experience
+
+# ─── The agent chooses the path. It does not choose these. ───
+strategy:
+  kind: open
+  moves: [ask, answer, acknowledge, offer, close, escalate]
+  # A model that finds a conversation awkward reaches for the exit, and an early
+  # close is indistinguishable in the log from a lead who answered everything.
+  allow_unscripted_close: false
+  # Two turns in a row of pure conversation is generous. Three is a pen pal.
+  max_deflections: 2
+  reasoning_effort: medium
+
+# ─── The only facts it may state. Sent verbatim. ───
+#
+# The agent decides WHETHER to answer; this block decides WHAT the answer says.
+# Anything not here, it admits it does not know — which is the behaviour that
+# makes an open agent shippable rather than a liability.
+knowledge:
+  fees: >-
+    Fees vary by programme and we set them per intake, so a counsellor will give
+    you the exact figure for the one you are considering.
+  scholarships: >-
+    There are merit scholarships and employer-sponsorship routes, and the
+    admissions team assesses eligibility case by case.
+  financing: >-
+    We work with education-loan partners and there is an instalment option; a
+    counsellor can walk you through which applies to you.
+  intakes: >-
+    The executive and online programmes take in students twice a year, and the
+    full-time programme once.
+  duration: >-
+    The executive programme runs part-time alongside work, the online programme
+    is self-paced, and the full-time programme is residential.
+  eligibility: >-
+    Eligibility depends on your degree and your work experience, and the
+    admissions team reviews each application individually.
+  admission_odds: >-
+    Nobody here can predict an admission decision — the committee reviews the
+    whole application.
+
+policy:
+  never:
+    - quote_exact_fees
+    - promise_admission
+    - compare_to_competitors
+  must_disclose: ai_agent_on_first_contact
+  escalate_when:
+    - asks_for_human
+    - sentiment < -0.5
+    - evidence.budget_band == needs_financing
+  max_turns: 14
+  quiet_hours: { start: "21:00", end: "09:00", tz: Asia/Kolkata }
+
+pinned:
+  opening: templates/wa_mba_optin_v4
+  disclosure: "Hi {{name}}, I'm an AI assistant from {{institute}}."
+  handoff: templates/wa_counsellor_intro_v2
+  # What it says when it decided to answer something no fact above covers.
+  # Owned by the tenant rather than hardcoded, because this line is the one a
+  # lead remembers when the agent did not know something.
+  deflection: >-
+    That's a fair question and I'd rather not guess — I'll make sure a
+    counsellor covers it properly.
+  variables:
+    institute: the admissions team
+
+scoring:
+  weights:
+    timeline.this_intake: 30
+    budget_band.above_15L: 25
+    budget_band.5L_to_15L: 20
+    decision_maker.self: 15
+    target_program.*: 10
+
+routing:
+  hot:  { when: "score >= 70", target: "handoff.counsellor", sla: 5m }
+  warm: { when: "score >= 40", target: "nurture.mba_warm_14d" }
+  cold: { when: "otherwise",   target: "nurture.mba_longtail_90d" }
+
+tools:
+  - capability: crm.upsert_lead
+    binding: hubspot
+  - capability: calendar.book_slot
+    binding: calendly
+  - capability: catalog.lookup_program
+    binding: internal
+
+metrics:
+  qualified_lead: "Routed.decision == hot"
+  booked:         "HandoffCreated exists"
+  conversion:     "OutcomeObserved.outcome in [enrolled, paid]"
+  revenue:        "sum(OutcomeObserved.amount where outcome == paid)"

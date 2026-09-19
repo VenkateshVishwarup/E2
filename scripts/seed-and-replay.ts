@@ -22,6 +22,11 @@ import { ReplayEngine } from "@midfunnel/batch/replay/engine";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const V4 = readFileSync(join(HERE, "../packages/core/test/fixtures/mba-v4.yaml"), "utf8");
+// The non-deterministic twin of v4: same contract, same scoring, same routing, so
+// the only variable is who decides what happens next. Published unrun, because a
+// conversation strategy cannot be evaluated against transcripts a different
+// strategy produced — you talk to it on the Chat tab or simulate it.
+const V7 = readFileSync(join(HERE, "../packages/core/test/fixtures/mba-v7-open.yaml"), "utf8");
 // v3 is the same journey before decision_maker was properly weighted: it
 // under-valued who actually makes the decision. Not a removed signal (which
 // would cap v3 below the qualifying threshold and make the lift degenerate) —
@@ -113,6 +118,7 @@ async function main() {
   const registry = new JourneyRegistry(pool, TENANT);
   await reseedVersion(registry, V3);
   await reseedVersion(registry, V4);
+  await reseedVersion(registry, V7);
 
   const cohort = makeCohort(400);
   const ids = await new ImportBoundary(events, {

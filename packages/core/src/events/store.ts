@@ -169,7 +169,7 @@ function foldEvents(leadId: string, events: readonly StoredEvent[]): LeadState {
       leadId,
       journey: events[0]?.journey ?? "",
       journeyVersion: events[0]?.journeyVersion ?? 0,
-      evidence: {}, turns: [], outcomes: [],
+      evidence: {}, turns: [], outcomes: [], moves: [],
     };
 
     for (const e of events) {
@@ -188,6 +188,16 @@ function foldEvents(leadId: string, events: readonly StoredEvent[]): LeadState {
         case "Scored":   state.score = Number(p.score); break;
         case "Routed":   state.decision = String(p.decision); break;
         case "OutcomeObserved": state.outcomes.push(e.payload as unknown as OutcomePayload); break;
+        case "MoveChosen":
+          state.moves.push({
+            move: String(p.move ?? ""),
+            proposed: String(p.proposed ?? p.move ?? ""),
+            overridden: Boolean(p.overridden),
+            rule: p.rule === null || p.rule === undefined ? null : String(p.rule),
+            rationale: String(p.rationale ?? ""),
+            at: e.occurredAt,
+          });
+          break;
         default: break;
       }
     }

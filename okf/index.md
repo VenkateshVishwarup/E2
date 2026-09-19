@@ -24,6 +24,7 @@ over the facts, so the platform never picks a definition on anyone's behalf.
 | [Version lifecycle](concepts/version-lifecycle.md) | Publish, try, promote, roll back | `core/src/journey/registry.ts` |
 | [Metric predicates](concepts/metric-predicates.md) | Tenant-declared metrics over events | `core/src/metrics/predicate.ts` |
 | [Agent runtime](concepts/agent-runtime.md) | `step()` and the action contract | `runtime/src/step.ts` |
+| [Conversation strategy](concepts/conversation-strategy.md) | Deterministic or not, and the guardrail between | `runtime/src/planner.ts`, `guardrails.ts` |
 | [Evidence extraction](concepts/evidence-extraction.md) | The contract as a JSON Schema | `runtime/src/extractor.ts` |
 | [Tool broker](concepts/tool-broker.md) | The agent as an enforced principal | `runtime/src/broker.ts` |
 | [Counterfactual replay](concepts/replay.md) | Observed versus modelled, kept apart | `batch/src/replay/` |
@@ -51,6 +52,11 @@ Break one of these and something downstream silently means a different thing.
    live-scoped read by someone forgetting a flag.
 7. **Publishing is not shipping.** Publishing makes a version exist; promoting makes it
    the one real traffic meets.
+8. **An open agent proposes; code disposes.** `admit()` is the only path from a planner
+   decision to an action, and the disclosure, an explicit request for a human, the
+   declared escalation rules and the turn budget hold under both strategies.
+9. **An agent may state only what `knowledge:` declares, verbatim.** It chooses whether
+   to answer; the tenant chooses what the answer says.
 
 ## Layout
 

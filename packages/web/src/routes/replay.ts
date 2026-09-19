@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { requiredEvidenceFields } from "@midfunnel/core/journey/spec";
+import { isOpen, requiredEvidenceFields } from "@midfunnel/core/journey/spec";
 import { statusFor, type ServerDeps } from "../deps.js";
 
 /**
@@ -31,7 +31,22 @@ export function registerRoutes(app: FastifyInstance, deps: ServerDeps): void {
 
   app.get<{ Params: { journey: string } }>(
     "/api/journeys/:journey/versions",
-    async (req) => ({ versions: await deps.registry.list(req.params.journey) }),
+    async (req) => {
+      const versions = await deps.registry.list(req.params.journey);
+      // Which strategy each version runs, alongside the plain list rather than
+      // instead of it — several screens read `versions` and a shape change would
+      // break them for a label. A version that will not parse is reported as
+      // scripted rather than failing the list: the editor is where a broken spec
+      // gets explained, not a dropdown.
+      const strategies: Record<number, "scripted" | "open"> = {};
+      await Promise.all(versions.map(async (v) => {
+        try {
+          strategies[v] = isOpen(await deps.registry.get(req.params.journey, v))
+            ? "open" : "scripted";
+        } catch { strategies[v] = "scripted"; }
+      }));
+      return { versions, strategies };
+    },
   );
 
   app.get<{ Params: { journey: string }; Querystring: { a?: string; b?: string } }>(

@@ -5,6 +5,7 @@ import { JourneyRegistry } from "@midfunnel/core/journey/registry";
 import { AgentRuntime } from "@midfunnel/runtime/step";
 import { KeywordExtractor } from "@midfunnel/runtime/keyword-extractor";
 import { offlineClient } from "@midfunnel/runtime/offline-client";
+import { OfflinePlanner } from "@midfunnel/runtime/planner";
 import { hasCredential } from "@midfunnel/runtime/provider";
 import { ReplayEngine } from "@midfunnel/batch/replay/engine";
 import { AttributionEngine } from "@midfunnel/intelligence/attribution/engine";
@@ -41,7 +42,10 @@ async function build(): Promise<FastifyInstance> {
 
   const runtime = credentialled
     ? new AgentRuntime()
-    : new AgentRuntime(new KeywordExtractor() as never, offlineClient());
+    // The offline planner is a peer of the model-backed one, not a stub around
+    // it: an open journey is fully demonstrable with no credential, including
+    // every guardrail override.
+    : new AgentRuntime(new KeywordExtractor() as never, offlineClient(), new OfflinePlanner());
 
   const fx = {
     currency: process.env.REPORTING_CURRENCY ?? "INR",

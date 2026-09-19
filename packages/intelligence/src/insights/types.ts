@@ -1,6 +1,9 @@
 export const FINDING_CODES = [
   "evidence_bottleneck", "segment_divergence", "drop_off",
   "routing_miscalibration", "timing", "policy_friction", "version_regression",
+  // Only reachable for an open-strategy version: the agent and the journey
+  // disagreeing about the job is a finding, not a bug.
+  "strategy_friction",
 ] as const;
 
 export type FindingCode = (typeof FINDING_CODES)[number];

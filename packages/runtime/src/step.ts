@@ -1,11 +1,16 @@
 import type OpenAI from "openai";
-import type { JourneySpec } from "@midfunnel/core/journey/spec";
+import { isOpen, pinnedText, type JourneySpec } from "@midfunnel/core/journey/spec";
+import type { Move } from "@midfunnel/core/journey/moves";
 import type { LeadState } from "@midfunnel/core/events/types";
 import { EvidenceExtractor, type ExtractedField } from "./extractor.js";
 import { cacheKey, createClient, MAX_TOKENS, modelFor } from "./provider.js";
 import { CostMeter } from "./meter.js";
-import { evaluatePredicate, evidenceComplete, qualifies, route, score, type Evidence } from "./scoring.js";
-import { pinnedText } from "@midfunnel/core/journey/spec";
+import {
+  evaluatePredicate, evidenceComplete, nextField, qualifies, route, score,
+  type Evidence,
+} from "./scoring.js";
+import { admit, type AdmittedMove } from "./guardrails.js";
+import { ModelPlanner, type Planner } from "./planner.js";
 import { LexiconSentiment } from "./sentiment.js";
 
 export type Action =
@@ -14,7 +19,29 @@ export type Action =
   | { kind: "score"; score: number }
   | { kind: "route"; decision: string; target: string; sla?: string }
   | { kind: "escalate"; reason: string }
-  | { kind: "complete"; qualified: boolean };
+  | { kind: "complete"; qualified: boolean }
+  /**
+   * An open-strategy decision: what the planner wanted, what it was allowed, and
+   * which rule made the difference. Emitted before the actions that carry it out,
+   * so the log reads in the order the turn actually happened.
+   */
+  | {
+      kind: "move";
+      move: Move;
+      proposed: string;
+      overridden: boolean;
+      rule: string | null;
+      rationale: string;
+      confidence: number;
+      targetField: string | null;
+      knowledgeKey: string | null;
+    }
+  /**
+   * A tool the agent chose to use. Carried out by the CALLER through the broker,
+   * not here: the broker is the single egress point and writes its own events, so
+   * performing it inside `step()` would put two authorities on one decision.
+   */
+  | { kind: "invoke"; capability: string; args: Record<string, unknown> };
 
 export interface StepOptions {
   /**
@@ -33,6 +60,12 @@ export interface StepOptions {
    * evidence contract — the caller checks that.
    */
   reuseEvidence?: boolean;
+  /**
+   * Whether the caller will actually perform an `invoke` action. False by
+   * default, so a caller that cannot reach the broker never lets the agent
+   * promise a lead something that will not happen.
+   */
+  toolsAvailable?: boolean;
 }
 
 const HUMAN_REQUEST = /\b(human|agent|person|representative|talk to someone|real person)\b/i;
@@ -40,13 +73,15 @@ const HUMAN_REQUEST = /\b(human|agent|person|representative|talk to someone|real
 export class AgentRuntime {
   private readonly extractor: EvidenceExtractor;
   private readonly client: OpenAI;
+  private readonly planner: Planner;
   private readonly sentiment = new LexiconSentiment();
   /** Token spend for the conversation currently being stepped. */
   readonly meter = new CostMeter();
 
-  constructor(extractor?: EvidenceExtractor, client?: OpenAI) {
+  constructor(extractor?: EvidenceExtractor, client?: OpenAI, planner?: Planner) {
     this.client = client ?? createClient();
     this.extractor = extractor ?? new EvidenceExtractor(this.client, this.meter);
+    this.planner = planner ?? new ModelPlanner(this.client, this.meter);
   }
 
   /** Extraction on its own, for callers that need it once and reuse it. */
@@ -76,6 +111,12 @@ export class AgentRuntime {
 
     const actions: Action[] = [];
 
+    // ── Steps 2 to 5 are NOT the model's to decide, in either strategy. ──
+    // Disclosure, an explicit request for a human, declared escalation policy
+    // and the turn budget are commitments the tenant made to the lead and to
+    // whoever pays for the tokens. An open agent gets to choose what to say; it
+    // does not get to choose whether those hold.
+
     // 2. Explicit human request short-circuits everything.
     const lastLead = [...state.turns].reverse().find((t) => t.role === "lead");
     if (lastLead && HUMAN_REQUEST.test(lastLead.text)) {
@@ -98,23 +139,36 @@ export class AgentRuntime {
     }
 
     // 5. Turn budget exhausted.
+    //
+    // Settle on whatever was established rather than dropping the lead. A
+    // conversation that gave you everything and then ran past its budget is a
+    // qualified lead, and discarding it because of a turn count is throwing away
+    // the thing the journey exists to produce. `settle` refuses to invent a
+    // decision when required evidence is missing, so an inconclusive conversation
+    // still ends inconclusively.
     const leadTurns = state.turns.filter((t) => t.role === "lead").length;
     if (state.turns.length >= spec.policy.max_turns || leadTurns >= spec.policy.max_turns) {
-      actions.push({ kind: "complete", qualified: false });
-      return actions;
+      return [...actions, ...this.settle(spec, evidence, { requireComplete: true })];
     }
 
-    // 6. Required evidence complete — score, route, finish.
+    // 6. From here the strategies part company.
+    if (isOpen(spec)) {
+      if (!allowFollowUp) {
+        // Replay against a finished transcript: there is no lead left to react
+        // to, so planning a reply would burn a call and change nothing. The
+        // comparison that matters — did this version qualify this lead — still
+        // runs, on the evidence the transcript contains.
+        return [...actions, ...this.settle(spec, evidence, { requireComplete: true })];
+      }
+      return [...actions, ...await this.stepOpen(spec, state, evidence, opts)];
+    }
+
+    // 7. Scripted: required evidence complete — score, route, finish.
     if (evidenceComplete(spec, evidence)) {
-      const s = score(spec, evidence);
-      const r = route(spec, s, evidence);
-      actions.push({ kind: "score", score: s });
-      actions.push({ kind: "route", ...r });
-      actions.push({ kind: "complete", qualified: qualifies(spec, s, evidence) });
-      return actions;
+      return [...actions, ...this.settle(spec, evidence, { requireComplete: false })];
     }
 
-    // 7. Otherwise ask for the next missing field — unless follow-up is off.
+    // 8. Otherwise ask for the next missing field — unless follow-up is off.
     //    Replay runs against a finished transcript: there is no lead left to
     //    answer, so asking would burn a model call and produce nothing.
     if (!allowFollowUp) {
@@ -122,8 +176,99 @@ export class AgentRuntime {
       return actions;
     }
     const target = nextField(spec, evidence);
+    if (target === null) return [...actions, ...this.settle(spec, evidence, { requireComplete: false })];
     actions.push({ kind: "send", text: await this.ask(spec, state, evidence, target) });
     return actions;
+  }
+
+  /**
+   * One planner decision, admitted or overridden, then carried out.
+   *
+   * The two halves are deliberately separate calls: `plan` is the model's and may
+   * return anything, `admit` is code and decides what actually happens. Nothing
+   * between them can be skipped, because this is the only path into an action.
+   */
+  private async stepOpen(
+    spec: JourneySpec, state: LeadState, evidence: Evidence, opts: StepOptions,
+  ): Promise<Action[]> {
+    const proposal = await this.planner.plan(spec, state, evidence);
+    const decision = admit(spec, proposal, {
+      evidence,
+      moves: state.moves,
+      toolsAvailable: opts.toolsAvailable ?? false,
+    });
+
+    const record: Action = {
+      kind: "move",
+      move: decision.move,
+      proposed: decision.proposed,
+      overridden: decision.overridden,
+      rule: decision.rule,
+      rationale: decision.rationale,
+      confidence: proposal.confidence,
+      targetField: decision.targetField,
+      knowledgeKey: decision.knowledgeKey,
+    };
+
+    return [record, ...await this.perform(spec, state, evidence, decision)];
+  }
+
+  /** What each admitted move actually does. */
+  private async perform(
+    spec: JourneySpec, state: LeadState, evidence: Evidence, d: AdmittedMove,
+  ): Promise<Action[]> {
+    switch (d.move) {
+      case "escalate":
+        // A named reason rather than the rationale, so escalations stay
+        // countable. The planner's own words are on the MoveChosen event.
+        return [{ kind: "escalate", reason: "agent_judgement" }];
+
+      case "close":
+        return this.settle(spec, evidence, { requireComplete: false });
+
+      case "ask": {
+        // `message === null` means the move was overridden, so whatever the
+        // planner wrote was for a different move and cannot be reused.
+        const field = d.targetField ?? nextField(spec, evidence);
+        if (field === null) return this.settle(spec, evidence, { requireComplete: false });
+        const text = d.message ?? await this.ask(spec, state, evidence, field);
+        return [{ kind: "send", text }];
+      }
+
+      case "answer":
+      case "acknowledge":
+        return [{ kind: "send", text: d.message ?? "" }];
+
+      case "offer": {
+        const args = Object.fromEntries(
+          Object.entries(evidence).map(([k, v]) => [k, v.value]),
+        );
+        return [
+          { kind: "send", text: d.message ?? "" },
+          { kind: "invoke", capability: d.capability!, args },
+        ];
+      }
+    }
+  }
+
+  /**
+   * Score, route, finish. The one path by which a conversation ends with a
+   * decision, shared by both strategies so an open journey cannot be scored on
+   * different terms from a scripted one.
+   */
+  private settle(
+    spec: JourneySpec, evidence: Evidence, opts: { requireComplete: boolean },
+  ): Action[] {
+    if (opts.requireComplete && !evidenceComplete(spec, evidence)) {
+      return [{ kind: "complete", qualified: false }];
+    }
+    const s = score(spec, evidence);
+    const r = route(spec, s, evidence);
+    return [
+      { kind: "score", score: s },
+      { kind: "route", ...r },
+      { kind: "complete", qualified: qualifies(spec, s, evidence) },
+    ];
   }
 
   private async ask(
@@ -164,24 +309,6 @@ export class AgentRuntime {
     if (!text) throw new Error("runtime received no text content from the model");
     return text;
   }
-}
-
-/**
- * Ordering rule: required before optional, and a `sensitive` field is never
- * asked while nothing at all is established — you do not open with money.
- */
-function nextField(spec: JourneySpec, evidence: Evidence): string {
-  const missing = Object.entries(spec.evidence).filter(([f]) => {
-    const got = evidence[f];
-    return got === undefined || got.value === null || got.value === undefined;
-  });
-  const nothingEstablished = Object.keys(evidence).length === 0;
-
-  const eligible = missing.filter(([, d]) => !(d.sensitive && nothingEstablished));
-  const pool = eligible.length > 0 ? eligible : missing;
-
-  const required = pool.find(([, d]) => d.required);
-  return (required ?? pool[0]!)[0];
 }
 
 function escalationTrigger(

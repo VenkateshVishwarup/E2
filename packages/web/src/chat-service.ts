@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { EventStore } from "@midfunnel/core/events/store";
 import type { JourneyRegistry } from "@midfunnel/core/journey/registry";
 import type { JourneySpec } from "@midfunnel/core/journey/spec";
-import { pinnedDefaults, renderPinned, requiredEvidenceFields } from "@midfunnel/core/journey/spec";
-import type { EventInput, LeadState } from "@midfunnel/core/events/types";
+import { isOpen, pinnedDefaults, renderPinned, requiredEvidenceFields } from "@midfunnel/core/journey/spec";
+import { AgentRegistry } from "@midfunnel/core/agent/registry";
+import { ToolBroker, mockBindings, type Binding } from "@midfunnel/runtime/broker";
+import type { EventInput, LeadState, StoredEvent } from "@midfunnel/core/events/types";
 import { evaluateAll } from "@midfunnel/core/metrics/predicate";
 import type { AgentRuntime } from "@midfunnel/runtime/step";
 import { actionsToEvents, type EventBase } from "@midfunnel/runtime/persist";
@@ -35,11 +37,30 @@ export interface EvidenceView {
   sensitive: boolean;
 }
 
+/** One planner decision, as the console shows it. */
+export interface MoveView {
+  move: string;
+  proposed: string;
+  overridden: boolean;
+  rule: string | null;
+  rationale: string;
+  at: string;
+}
+
 export interface ChatState {
   leadId: string;
   journey: string;
   version: number;
-  turns: Array<{ role: "agent" | "lead"; text: string; at: string }>;
+  /** Which strategy this version runs, so the UI can explain what it is seeing. */
+  strategy: "scripted" | "open";
+  /**
+   * The conversation. An agent turn carries the decision that produced it, when
+   * there was one — taken from the order of the log rather than inferred by
+   * pairing counts, which would go wrong the moment a turn sent nothing.
+   */
+  turns: Array<{
+    role: "agent" | "lead"; text: string; at: string; move?: MoveView;
+  }>;
   evidence: EvidenceView[];
   missingRequired: string[];
   score: number | null;
@@ -52,9 +73,27 @@ export interface ChatState {
   completed: boolean;
   escalated: boolean;
   escalationRule: string | null;
+  /**
+   * Why the conversation is over, or null while it is still going.
+   *
+   * `completed` alone said "a decision was reached", which is not the same as
+   * "this is finished": a conversation that exhausts its turn budget without
+   * establishing required evidence reaches no decision and is still over. Reporting
+   * one as the other left the UI inviting a reply nothing would answer.
+   */
+  endedReason: "routed" | "escalated" | "turn_budget" | null;
   /** Minor units of the reporting currency, metered from real token usage. */
   modelCost: number;
   currency: string;
+  /**
+   * Every decision the planner made, in order. Empty for a scripted version —
+   * its path is in the code, so there is nothing to disclose.
+   *
+   * Overlaps with the moves on `turns`, and deliberately: a `close` or an
+   * `escalate` sends no message, so there is no turn for it to hang on, and those
+   * are the two decisions a reviewer most wants to find.
+   */
+  moves: MoveView[];
   /** True when no model credential is configured. */
   offline: boolean;
 }
@@ -74,6 +113,11 @@ export class ChatService {
     private readonly runtime: AgentRuntime,
     private readonly fx: ModelCostConfig,
     private readonly offline: boolean,
+    /**
+     * Bindings the agent may reach through the broker. Mocks today; the broker's
+     * privilege enforcement is not a mock, which is the half that matters.
+     */
+    private readonly bindings: Record<string, Binding> = mockBindings,
   ) {}
 
   async start(opts: StartSession): Promise<ChatReply> {
@@ -118,13 +162,24 @@ export class ChatService {
     const folded: LeadState = await this.store.fold(base.leadId);
 
     this.runtime.meter.drain();          // cost of THIS turn only
-    const actions = await this.runtime.step(spec, folded, { allowFollowUp: true });
+    // Tools are reachable from a live conversation, so an open agent may offer to
+    // use one. A caller that cannot reach the broker passes false, and the
+    // guardrail refuses the move rather than letting the agent promise something
+    // nothing will carry out.
+    const actions = await this.runtime.step(spec, folded, {
+      allowFollowUp: true, toolsAvailable: true,
+    });
     const applied = actionsToEvents(actions, base, "web");
     // Pinned text is a template until here. The runtime cannot render it —
     // the values are per-conversation — so a lead would otherwise receive
     // "Hi {{name}}" verbatim.
     render(applied, await this.variables(spec, base.leadId));
     if (applied.events.length > 0) await this.store.appendMany(applied.events);
+
+    // After the message, and through the broker — which authorises, meters and
+    // writes its own events. A denial is recorded as an AuthorizationDenied
+    // rather than swallowed, so a privilege gap shows up as a fact.
+    await this.performInvocations(spec, base, applied.invocations);
 
     // Written per turn rather than at the end, because a conversation someone
     // abandons still cost real money and still belongs in cost per outcome.
@@ -134,6 +189,31 @@ export class ChatService {
     }, this.runtime.meter.drain(), this.fx);
 
     return { reply: applied.sentText, state: await this.view(spec, base.leadId) };
+  }
+
+  /**
+   * Carries out the tools the agent chose to use.
+   *
+   * Deliberately after the message is on the record: the lead sees "let me look
+   * that up" whether or not the lookup then succeeds, and the result reaches them
+   * on the next turn because the planner reads the log. A failure is a
+   * `ToolInvoked` with an error status, never a thrown request — one broken
+   * binding must not lose a conversation.
+   */
+  private async performInvocations(
+    spec: JourneySpec, base: EventBase,
+    invocations: readonly { capability: string; args: Record<string, unknown> }[],
+  ): Promise<void> {
+    if (invocations.length === 0) return;
+    const agents = AgentRegistry.fromSpec(spec);
+    const broker = new ToolBroker(agents, this.store, this.bindings);
+    const principal = agents.get(spec.agent.identity);
+    const ctx = {
+      leadId: base.leadId, journey: base.journey, journeyVersion: base.journeyVersion,
+    };
+    for (const { capability, args } of invocations) {
+      await broker.invoke(ctx, principal, capability, args);
+    }
   }
 
   private async view(spec: JourneySpec, leadId: string): Promise<ChatState> {
@@ -152,6 +232,7 @@ export class ChatService {
       };
     });
 
+    const movesByTurn = pairMovesToTurns(events);
     const escalation = events.filter((e) => e.type === "PolicyEvaluated").at(-1);
     const routed = events.filter((e) => e.type === "Routed").at(-1);
     const evaluated = evaluateAll(spec.metrics, events);
@@ -160,7 +241,11 @@ export class ChatService {
       leadId,
       journey: spec.journey,
       version: spec.version,
-      turns: folded.turns.map((t) => ({ role: t.role, text: t.text, at: t.at.toISOString() })),
+      strategy: isOpen(spec) ? "open" : "scripted",
+      turns: folded.turns.map((t, i) => ({
+        role: t.role, text: t.text, at: t.at.toISOString(),
+        ...(movesByTurn.get(i) ? { move: movesByTurn.get(i)! } : {}),
+      })),
       evidence,
       missingRequired: evidence
         .filter((e) => e.required && (e.value === null || e.value === undefined))
@@ -170,11 +255,22 @@ export class ChatService {
       metrics: { ...evaluated.booleans, ...evaluated.aggregates },
       completed: routed !== undefined,
       escalated: escalation !== undefined,
+      endedReason: routed !== undefined
+        ? "routed"
+        : escalation !== undefined
+          ? "escalated"
+          // A fold over facts, not a new event: the runtime stops at this
+          // threshold, so the log already says the conversation is spent.
+          : folded.turns.length >= spec.policy.max_turns ? "turn_budget" : null,
       escalationRule: escalation ? String(escalation.payload.ruleId) : null,
       modelCost: events
         .filter((e) => e.type === "CostObserved" && e.payload.kind === "model")
         .reduce((s, e) => s + Number(e.payload.amount ?? 0), 0),
       currency: this.fx.currency,
+      moves: folded.moves.map((m) => ({
+        move: m.move, proposed: m.proposed, overridden: m.overridden,
+        rule: m.rule, rationale: m.rationale, at: m.at.toISOString(),
+      })),
       offline: this.offline,
     };
   }
@@ -222,6 +318,44 @@ export class ChatService {
     if (live === null) throw new Error(`journey not found: ${opts.journey}`);
     return live;
   }
+}
+
+/**
+ * Which decision produced which agent turn.
+ *
+ * A `MoveChosen` is written immediately before the `MessageSent` it explains, in
+ * one batch, so within a lead the log already holds the association — walking it
+ * recovers a fact rather than guessing at one. Counting agent turns and planner
+ * decisions and pairing them off would be wrong for every conversation containing
+ * a turn that sent nothing, which is every conversation that ended.
+ *
+ * `turns` is folded from the same ordered stream, so the indices line up.
+ */
+function pairMovesToTurns(events: readonly StoredEvent[]): Map<number, MoveView> {
+  const byTurn = new Map<number, MoveView>();
+  let turnIndex = 0;
+  let pending: MoveView | null = null;
+
+  for (const e of events) {
+    if (e.type === "MoveChosen") {
+      pending = {
+        move: String(e.payload.move ?? ""),
+        proposed: String(e.payload.proposed ?? e.payload.move ?? ""),
+        overridden: Boolean(e.payload.overridden),
+        rule: e.payload.rule == null ? null : String(e.payload.rule),
+        rationale: String(e.payload.rationale ?? ""),
+        at: e.occurredAt.toISOString(),
+      };
+      continue;
+    }
+    if (e.type === "MessageSent") {
+      if (pending) { byTurn.set(turnIndex, pending); pending = null; }
+      turnIndex++;
+      continue;
+    }
+    if (e.type === "MessageReceived") { turnIndex++; pending = null; }
+  }
+  return byTurn;
 }
 
 /**

@@ -176,3 +176,29 @@ describe("cost of a replay", () => {
     expect(runtime.extract.mock.calls.length).toBe(0);
   });
 });
+
+describe("ReplayEngine — what a comparison cannot see", () => {
+  const V7 = readFileSync(join(HERE, "../../core/test/fixtures/mba-v7-open.yaml"), "utf8");
+
+  it("warns when the two arms differ in conversation strategy", async () => {
+    // Both arms settle on the same recorded evidence, so the lift is zero — which
+    // reads as "no effect" when it means "wrong instrument".
+    await registry.publish(V7);
+    const ids = await new ImportBoundary(store, IMPORT_OPTS)
+      .import(Array.from({ length: 10 }, (_, i) => mkLead(i, false)));
+    const lift = await new ReplayEngine(store, registry, stubRuntime() as never)
+      .replay(IMPORT_OPTS.journey, 4, 7, ids);
+
+    expect(lift.caveats).toHaveLength(1);
+    expect(lift.caveats[0]).toMatch(/cannot see the strategy change/i);
+    expect(lift.caveats[0]).toMatch(/Simulate/);
+  });
+
+  it("reports no caveat when both arms share a strategy", async () => {
+    const ids = await new ImportBoundary(store, IMPORT_OPTS)
+      .import(Array.from({ length: 10 }, (_, i) => mkLead(i, false)));
+    const lift = await new ReplayEngine(store, registry, stubRuntime() as never)
+      .replay(IMPORT_OPTS.journey, 3, 4, ids);
+    expect(lift.caveats).toEqual([]);
+  });
+});

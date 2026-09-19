@@ -19,7 +19,7 @@ const persona: Persona = {
 
 const state = (over: Partial<LeadState> = {}): LeadState => ({
   leadId: "sim_1", journey: spec.journey, journeyVersion: 4,
-  evidence: {}, turns: [], outcomes: [], ...over,
+  evidence: {}, turns: [], outcomes: [], moves: [], ...over,
 });
 
 const ev = (o: Record<string, string>) =>

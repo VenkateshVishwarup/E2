@@ -246,3 +246,20 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .agent-name { display: flex; align-items: center; gap: 8px; }
 .agent-name .journey-select { font-size: 15px; font-weight: 600; color: var(--fg); }
 .agent-meta { margin: 6px 0 0; font-size: 12px; }
+
+/* The strategy chooser: the one decision in the editor that is a choice between
+   two things rather than free text. */
+.strategy { margin: 18px 0 4px; }
+.strategy-choice { display: flex; gap: 6px; margin: 6px 0 8px; }
+.strategy-choice .section[aria-checked="true"] {
+  background: var(--fg); border-color: var(--fg); color: var(--bg); font-weight: 600;
+}
+.strategy .provenance { margin: 0; max-width: 62ch; }
+
+/* The move trail in a live conversation. An overridden decision is the
+   interesting row, so it is the one that gets a colour. */
+.move { font-size: 11px; color: var(--muted); margin: 6px 0 2px; font-family: ui-monospace,
+        SFMono-Regular, Menlo, monospace; }
+.move.overridden { color: var(--modelled); }
+.move-why { font-family: inherit; font-style: italic; }
+.warn-text { color: var(--modelled); }
