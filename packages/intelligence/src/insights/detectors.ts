@@ -446,6 +446,11 @@ function suggestFor(rule: string, wanted: string): string {
       return "The agent keeps trying to end conversations early. Either a required field " +
              "is one leads will not give, or the contract is longer than the conversation " +
              "supports — consider making the weakest field optional.";
+    case "close_before_all_collected":
+      return "The agent keeps trying to stop before it has asked for the optional fields " +
+             "this journey collects. If those fields are not worth the extra turns, set " +
+             "`objective.collect: required` and lower the qualifying threshold to what the " +
+             "required fields can actually reach.";
     case "deflections_exhausted":
       return "The agent is spending its whole budget being agreeable. Raise " +
              "`strategy.max_deflections` if the conversations read well, or declare the " +

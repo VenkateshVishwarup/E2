@@ -9,7 +9,9 @@ import type { LeadState } from "@midfunnel/core/events/types";
 import { cacheKey, MAX_TOKENS, modelFor } from "./provider.js";
 import type { CostMeter } from "./meter.js";
 import { exhaustedFields, type MoveProposal } from "./guardrails.js";
-import { established, evidenceComplete, nextField, type Evidence } from "./scoring.js";
+import {
+  collectionComplete, established, evidenceComplete, nextField, type Evidence,
+} from "./scoring.js";
 
 /**
  * Chooses the next move.
@@ -125,8 +127,9 @@ export class OfflinePlanner implements Planner {
 
     // Skip what has already been asked for as often as allowed. Proposing it
     // anyway would only be overridden; the guardrail stays the backstop.
-    const field = nextField(spec, evidence, exhaustedFields(spec, state.moves, evidence));
-    if (field !== null && !evidenceComplete(spec, evidence)) {
+    const spent = exhaustedFields(spec, state.moves, evidence);
+    const field = nextField(spec, evidence, spent);
+    if (field !== null && !collectionComplete(spec, evidence, spent)) {
       const again = state.moves.some((m) => m.move === "ask" && m.targetField === field);
       return {
         ...base, move: "ask",
@@ -257,7 +260,12 @@ function plannerPrompt(spec: JourneySpec): string {
     "if nothing else is missing. Never repeat a question word for word.",
     ...(spec.strategy.allow_unscripted_close
       ? []
-      : ["- Do not choose `close` while any required evidence is missing."]),
+      : [spec.objective.collect === "all"
+          ? "- This journey collects EVERY declared field before scoring, optional ones " +
+            "included: each carries score, and a lead scored on the required fields alone " +
+            "can be routed lower than they deserve. Do not choose `close` while any field " +
+            "is still missing."
+          : "- Do not choose `close` while any required evidence is missing."]),
   ].join("\n");
 }
 
@@ -271,6 +279,9 @@ function situation(spec: JourneySpec, state: LeadState, evidence: Evidence): str
       Object.entries(evidence).map(([k, v]) => [k, v.value]),
     ),
     still_missing_required: required.filter((f) => !established(evidence, f)),
+    still_missing_optional: Object.keys(spec.evidence)
+      .filter((f) => !required.includes(f) && !established(evidence, f)),
+    collect: spec.objective.collect,
     // Asked for as often as the journey allows without it landing. Do not ask
     // again — move on, or hand to a human if nothing else is missing.
     do_not_ask_again: [...exhaustedFields(spec, state.moves, evidence)],

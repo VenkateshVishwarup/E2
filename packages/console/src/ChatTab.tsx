@@ -181,7 +181,7 @@ export function ChatTab({ journey }: { journey: string }) {
                 {state.endedReason === "escalated"
                   ? `Escalated to a human — the rule "${state.escalationRule}" fired.`
                   : state.endedReason === "routed"
-                    ? `Conversation complete. Routed ${state.decision}.`
+                    ? `Conversation complete. Scored ${state.score} → routed ${state.decision}.`
                     : `Out of turns — this journey allows the agent a fixed budget, and it ` +
                       `spent it without establishing everything required, so there is no ` +
                       `decision to report.`}

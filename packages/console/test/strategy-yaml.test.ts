@@ -10,7 +10,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, "../../core/test/fixtures");
 const SCRIPTED = readFileSync(join(FIXTURES, "mba-v4.yaml"), "utf8");
-const OPEN = readFileSync(join(FIXTURES, "mba-v7-open.yaml"), "utf8");
+const OPEN = readFileSync(join(FIXTURES, "mba-v8-open.yaml"), "utf8");
 
 describe("readStrategy", () => {
   it("reads a journey that declares no strategy as scripted", () => {

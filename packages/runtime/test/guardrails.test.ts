@@ -11,11 +11,11 @@ import type { Evidence } from "../src/scoring.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, "../../core/test/fixtures");
-const open = parseSpec(readFileSync(join(FIXTURES, "mba-v7-open.yaml"), "utf8"));
+const open = parseSpec(readFileSync(join(FIXTURES, "mba-v8-open.yaml"), "utf8"));
 
 /** A spec with one field changed, so a test does not need its own YAML file. */
 function variant(over: (s: JourneySpec) => void): JourneySpec {
-  const copy = parseSpec(readFileSync(join(FIXTURES, "mba-v7-open.yaml"), "utf8"));
+  const copy = parseSpec(readFileSync(join(FIXTURES, "mba-v8-open.yaml"), "utf8"));
   over(copy);
   return copy;
 }
@@ -32,6 +32,12 @@ const ev = (o: Record<string, string>): Evidence =>
 const ALL_REQUIRED = ev({
   target_program: "executive_mba", timeline: "this_intake", budget_band: "5L_to_15L",
 });
+
+/** Every declared field, which is what the reference journey collects. */
+const EVERYTHING = { ...ALL_REQUIRED, ...ev({ decision_maker: "self", prior_qualification: "B.Tech" }) };
+
+/** The same journey, stopping as soon as the required fields are in. */
+const minimal = () => variant((s) => { s.objective.collect = "required"; });
 
 const ctx = (over: Partial<GuardrailContext> = {}): GuardrailContext => ({
   evidence: {}, moves: [], toolsAvailable: true, ...over,
@@ -90,9 +96,33 @@ describe("admit — escalate", () => {
 });
 
 describe("admit — close", () => {
-  it("is admitted once required evidence is complete", () => {
-    const d = admit(open, propose({ move: "close", message: "" }), ctx({ evidence: ALL_REQUIRED }));
+  it("is admitted once everything the journey collects is in", () => {
+    const d = admit(open, propose({ move: "close", message: "" }), ctx({ evidence: EVERYTHING }));
     expect(d).toMatchObject({ move: "close", overridden: false, message: null });
+  });
+
+  it("is refused while an optional field is outstanding, when the journey collects all", () => {
+    // Every optional field carries score. Stopping at "required complete" routed
+    // a lead cold at 35 that scored 50 with one more question asked.
+    const d = admit(open, propose({ move: "close", message: "" }), ctx({ evidence: ALL_REQUIRED }));
+    expect(d).toMatchObject({
+      move: "ask", overridden: true, rule: "close_before_all_collected",
+    });
+    expect(d.targetField).toBe("decision_maker");
+  });
+
+  it("reports a missing optional field apart from a missing required one", () => {
+    // One cannot be scored at all; the other could be scored better. Collapsing
+    // them would hide which a journey keeps hitting.
+    const missingRequired = admit(open, propose({ move: "close", message: "" }),
+      ctx({ evidence: ev({ target_program: "online_mba" }) }));
+    expect(missingRequired.rule).toBe("close_without_required_evidence");
+  });
+
+  it("is admitted at required-complete when that is what the journey collects", () => {
+    const d = admit(minimal(), propose({ move: "close", message: "" }),
+      ctx({ evidence: ALL_REQUIRED }));
+    expect(d).toMatchObject({ move: "close", overridden: false });
   });
 
   it("is refused while required evidence is missing", () => {
@@ -119,7 +149,7 @@ describe("admit — close", () => {
 
   it("sends nothing, exactly as the scripted path does", () => {
     const d = admit(open, propose({ move: "close", message: "Thanks, bye!" }),
-      ctx({ evidence: ALL_REQUIRED }));
+      ctx({ evidence: EVERYTHING }));
     expect(d.message).toBeNull();
   });
 });
@@ -286,11 +316,7 @@ describe("admit — ask", () => {
   });
 
   it("becomes a close when there is nothing left to ask", () => {
-    const everything = ev({
-      target_program: "executive_mba", timeline: "this_intake", budget_band: "above_15L",
-      decision_maker: "self", prior_qualification: "B.Tech",
-    });
-    const d = admit(open, propose({ targetField: "timeline" }), ctx({ evidence: everything }));
+    const d = admit(open, propose({ targetField: "timeline" }), ctx({ evidence: EVERYTHING }));
     expect(d).toMatchObject({ move: "close", overridden: true });
   });
 });

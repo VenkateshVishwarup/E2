@@ -6,7 +6,7 @@ import { EvidenceExtractor, type ExtractedField } from "./extractor.js";
 import { cacheKey, createClient, MAX_TOKENS, modelFor } from "./provider.js";
 import { CostMeter } from "./meter.js";
 import {
-  evaluatePredicate, evidenceComplete, nextField, qualifies, route, score,
+  collectionComplete, evaluatePredicate, evidenceComplete, nextField, qualifies, route, score,
   type Evidence,
 } from "./scoring.js";
 import { admit, type AdmittedMove } from "./guardrails.js";
@@ -163,8 +163,8 @@ export class AgentRuntime {
       return [...actions, ...await this.stepOpen(spec, state, evidence, opts)];
     }
 
-    // 7. Scripted: required evidence complete — score, route, finish.
-    if (evidenceComplete(spec, evidence)) {
+    // 7. Scripted: everything this journey collects is in — score, route, finish.
+    if (collectionComplete(spec, evidence)) {
       return [...actions, ...this.settle(spec, evidence, { requireComplete: false })];
     }
 

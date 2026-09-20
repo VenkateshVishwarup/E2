@@ -85,6 +85,27 @@ collecting anything. Without it an open agent and a chatty lead talk pleasantly
 forever, and every turn is billed. The streak is counted over **performed** moves,
 not proposed ones: a deflection the guardrail already blocked did not happen.
 
+## When the agent stops collecting
+
+`objective.collect` decides it, and both strategies read the one definition
+(`collectionComplete` in `runtime/src/scoring.ts`) so the same journey cannot
+finish on different terms depending on who chose the path.
+
+- `required` (default) stops as soon as the required fields are established.
+  Cheapest, and what every version published before this setting existed does.
+- `all` asks for every declared field, then scores.
+
+The difference is not cosmetic. Every optional field carries weight, so a journey
+whose threshold is out of reach on required evidence alone can never route anyone
+hot — `lintSpec` raises `unreachable_qualification` for exactly that, and now
+accounts for the policy rather than assuming the agent stops early. A real
+conversation on v7 routed a lead **cold at 35** that would have scored **50** with
+one more question asked, because `decision_maker` is optional and worth 15.
+
+`all` is strictly stronger than `required`, never weaker: a field the agent has
+given up on is removed from the queue, so "nothing left to ask" must not be read
+as "finished" while a required field is still missing.
+
 ## A question that is not landing
 
 `strategy.max_asks_per_field` (default 2) caps how often the agent may ask for any

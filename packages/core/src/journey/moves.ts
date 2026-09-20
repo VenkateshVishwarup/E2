@@ -41,6 +41,7 @@ export const MOVE_INTENT: Record<Move, string> = {
 export const OVERRIDE_RULES = [
   "move_not_permitted",
   "close_without_required_evidence",
+  "close_before_all_collected",
   "answer_without_knowledge",
   "answer_quoted_a_figure",
   "ask_unknown_field",
@@ -59,6 +60,8 @@ export type OverrideRule = (typeof OVERRIDE_RULES)[number];
 export const OVERRIDE_REASON: Record<OverrideRule, string> = {
   move_not_permitted: "the journey does not allow that move",
   close_without_required_evidence: "required evidence is still missing",
+  close_before_all_collected:
+    "this journey collects every declared field before scoring, and some are outstanding",
   answer_without_knowledge: "no declared knowledge entry covers that question",
   answer_quoted_a_figure: "the framing contained a figure and this journey may not quote them",
   ask_unknown_field: "the field asked for is not in the evidence contract",

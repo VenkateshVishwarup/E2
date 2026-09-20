@@ -1,4 +1,4 @@
-# The open-strategy twin of v4.
+# The open-strategy twin of v4, collecting every declared field before it scores.
 #
 # Same evidence contract, same scoring, same routing, same policy — so a replay
 # against v4 isolates exactly one variable: who decides what happens next. That
@@ -6,7 +6,7 @@
 # free-roaming agent better than a scripted one?" becomes a measurement instead
 # of an argument.
 journey: mba-admissions-qualification
-version: 7
+version: 8
 vertical: edtech
 owner: fde@engati.com
 
@@ -24,6 +24,14 @@ agent:
 objective:
   goal: book_counselling_call
   qualifies_when: score >= 70 AND evidence.complete(required)
+  # Ask for everything declared, then score — not just the required fields.
+  #
+  # Required evidence here can reach at most 65 and qualifying needs 70, so a
+  # journey that stops at "required complete" can never route anyone hot: the
+  # missing points live in `decision_maker`, which is optional. Stopping early
+  # also routed a next-intake lead cold at 35 when the same lead scored 50 with
+  # one more question asked.
+  collect: all
 
 # Identical to v4. A replay that also changed the contract would measure two
 # things and attribute the result to whichever one the reader already believed.

@@ -26,7 +26,7 @@ const V4 = readFileSync(join(HERE, "../packages/core/test/fixtures/mba-v4.yaml")
 // the only variable is who decides what happens next. Published unrun, because a
 // conversation strategy cannot be evaluated against transcripts a different
 // strategy produced — you talk to it on the Chat tab or simulate it.
-const V7 = readFileSync(join(HERE, "../packages/core/test/fixtures/mba-v7-open.yaml"), "utf8");
+const V8 = readFileSync(join(HERE, "../packages/core/test/fixtures/mba-v8-open.yaml"), "utf8");
 // v3 is the same journey before decision_maker was properly weighted: it
 // under-valued who actually makes the decision. Not a removed signal (which
 // would cap v3 below the qualifying threshold and make the lift degenerate) —
@@ -118,7 +118,7 @@ async function main() {
   const registry = new JourneyRegistry(pool, TENANT);
   await reseedVersion(registry, V3);
   await reseedVersion(registry, V4);
-  await reseedVersion(registry, V7);
+  await reseedVersion(registry, V8);
 
   const cohort = makeCohort(400);
   const ids = await new ImportBoundary(events, {

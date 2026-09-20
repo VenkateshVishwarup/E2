@@ -9,7 +9,7 @@ import type { Evidence } from "../src/scoring.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, "../../core/test/fixtures");
-const open = parseSpec(readFileSync(join(FIXTURES, "mba-v7-open.yaml"), "utf8"));
+const open = parseSpec(readFileSync(join(FIXTURES, "mba-v8-open.yaml"), "utf8"));
 
 const state = (over: Partial<LeadState> = {}): LeadState => ({
   leadId: "L1", journey: open.journey, journeyVersion: open.version,
@@ -50,9 +50,17 @@ describe("OfflinePlanner", () => {
     expect(p.message).not.toBe("");
   });
 
-  it("closes once required evidence is complete", async () => {
+  it("keeps asking for optional fields when the journey collects them all", async () => {
     const p = await planner.plan(open, state({ turns: [turn("lead", "5L to 15L")] }),
       ev({ target_program: "executive_mba", timeline: "this_intake", budget_band: "5L_to_15L" }));
+    expect(p).toMatchObject({ move: "ask", targetField: "decision_maker" });
+  });
+
+  it("closes once everything the journey collects is in", async () => {
+    const p = await planner.plan(open, state({ turns: [turn("lead", "myself")] }), ev({
+      target_program: "executive_mba", timeline: "this_intake", budget_band: "5L_to_15L",
+      decision_maker: "self", prior_qualification: "B.Tech",
+    }));
     expect(p.move).toBe("close");
   });
 

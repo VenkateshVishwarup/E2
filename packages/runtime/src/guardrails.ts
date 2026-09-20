@@ -4,7 +4,9 @@ import {
 } from "@midfunnel/core/journey/spec";
 import type { Move, OverrideRule } from "@midfunnel/core/journey/moves";
 import type { MoveRecord } from "@midfunnel/core/events/types";
-import { established, evidenceComplete, nextField, type Evidence } from "./scoring.js";
+import {
+  collectionComplete, established, evidenceComplete, nextField, type Evidence,
+} from "./scoring.js";
 
 /**
  * What the planner asked to do. Every field is untrusted: `move` may be a word
@@ -140,8 +142,15 @@ export function admit(
       return keep({ message: text || null });
 
     case "close": {
-      if (!evidenceComplete(spec, ctx.evidence) && !spec.strategy.allow_unscripted_close) {
-        return deny("close_without_required_evidence");
+      const spent = exhaustedFields(spec, ctx.moves, ctx.evidence);
+      if (!collectionComplete(spec, ctx.evidence, spent) && !spec.strategy.allow_unscripted_close) {
+        // Two different failures, reported apart: required evidence missing is a
+        // conversation that cannot be scored, whereas an optional field
+        // outstanding is a conversation that could be scored better. Collapsing
+        // them would hide which one a journey keeps hitting.
+        return deny(evidenceComplete(spec, ctx.evidence)
+          ? "close_before_all_collected"
+          : "close_without_required_evidence");
       }
       // Closing sends nothing, exactly as the scripted path does: the turn
       // produces a score, a route and an end, not a farewell.
@@ -248,7 +257,8 @@ function fallback(
   // what is required is actually established; otherwise it is a conversation the
   // agent cannot finish, and closing it would record an inconclusive lead as if
   // it had run its course.
-  const done = evidenceComplete(spec, ctx.evidence) || spec.strategy.allow_unscripted_close;
+  const done = collectionComplete(spec, ctx.evidence, exhaustedFields(spec, ctx.moves, ctx.evidence))
+    || spec.strategy.allow_unscripted_close;
   if (done && moveAllowed(spec, "close")) {
     return { ...base, move: "close", message: null, targetField: null };
   }

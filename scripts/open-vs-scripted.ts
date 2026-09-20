@@ -154,7 +154,7 @@ async function main(): Promise<void> {
   }
 
   const scripted = parseSpec(readFileSync(join(FIXTURES, "mba-v4.yaml"), "utf8"));
-  const open = parseSpec(readFileSync(join(FIXTURES, "mba-v7-open.yaml"), "utf8"));
+  const open = parseSpec(readFileSync(join(FIXTURES, "mba-v8-open.yaml"), "utf8"));
   if (isOpen(scripted) || !isOpen(open)) throw new Error("fixtures are the wrong way round");
 
   render(`SCRIPTED — v${scripted.version}`, await converse(scripted, LEAD));

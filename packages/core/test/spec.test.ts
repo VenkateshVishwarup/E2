@@ -167,7 +167,7 @@ describe("pinned template variables", () => {
 
 // ─── Conversation strategy ───────────────────────────────────────────────────
 
-const openYaml = readFileSync(join(HERE, "fixtures/mba-v7-open.yaml"), "utf8");
+const openYaml = readFileSync(join(HERE, "fixtures/mba-v8-open.yaml"), "utf8");
 
 describe("strategy", () => {
   it("defaults to scripted, so every existing journey behaves as before", () => {
@@ -250,5 +250,32 @@ describe("lintSpec — strategy", () => {
       .replace("    - quote_exact_fees\n", "")
       .replace("  fees: >-", "  fees: The fee is ₹12.5 lakh.\n  unused_fees: >-");
     expect(codes(quoting)).not.toContain("knowledge_contradicts_policy");
+  });
+});
+
+describe("objective.collect", () => {
+  it("defaults to required, so published versions keep their behaviour", () => {
+    expect(parseSpec(yaml).objective.collect).toBe("required");
+  });
+
+  it("reads a journey that collects everything", () => {
+    expect(parseSpec(openYaml).objective.collect).toBe("all");
+  });
+
+  it("stops warning about an unreachable threshold once the agent asks for everything", () => {
+    // The warning's premise is that the runtime stops at the required fields.
+    // When it does not, the optional weights are genuinely reachable.
+    const stopsEarly = openYaml.replace("  collect: all", "  collect: required");
+    expect(lintSpec(parseSpec(stopsEarly)).map((w) => w.code))
+      .toContain("unreachable_qualification");
+    expect(lintSpec(parseSpec(openYaml)).map((w) => w.code))
+      .not.toContain("unreachable_qualification");
+  });
+
+  it("still warns when no amount of evidence can reach the threshold", () => {
+    const impossible = openYaml.replace("qualifies_when: score >= 70", "qualifies_when: score >= 95");
+    const [warning] = lintSpec(parseSpec(impossible))
+      .filter((w) => w.code === "unreachable_qualification");
+    expect(warning!.message).toMatch(/every declared field can score at most 80/);
   });
 });

@@ -151,7 +151,7 @@ describe("AgentRuntime.step — sentiment escalation", () => {
 // ─── The open strategy ───────────────────────────────────────────────────────
 
 const openSpec = parseSpec(
-  readFileSync(join(HERE, "../../core/test/fixtures/mba-v7-open.yaml"), "utf8"),
+  readFileSync(join(HERE, "../../core/test/fixtures/mba-v8-open.yaml"), "utf8"),
 );
 
 const openState = (over: Partial<LeadState> = {}): LeadState => ({
@@ -256,7 +256,7 @@ describe("AgentRuntime.step — open strategy", () => {
   it("scores and routes through the same path as the scripted strategy", async () => {
     const complete = ev({
       target_program: "executive_mba", timeline: "this_intake", budget_band: "above_15L",
-      decision_maker: "self",
+      decision_maker: "self", prior_qualification: "B.Tech",
     });
     const p = planner({ move: "close", message: "" });
     const actions = await runtimeFor(p, complete).step(openSpec, openState(started));
@@ -352,5 +352,30 @@ describe("AgentRuntime.step — a question that is not landing", () => {
       overridden: true, rule: "ask_repeated", targetField: "budget_band",
     });
     expect(actions).toContainEqual({ kind: "send", text: "And roughly what budget are you working with?" });
+  });
+});
+
+describe("AgentRuntime.step — objective.collect", () => {
+  it("keeps the scripted strategy collecting optional fields too", async () => {
+    // One definition of "finished", shared by both strategies, or the same
+    // journey would score differently depending on who chose the path.
+    const collectAll = parseSpec(
+      readFileSync(join(HERE, "../../core/test/fixtures/mba-v4.yaml"), "utf8")
+        .replace("  qualifies_when:", "  collect: all\n  qualifies_when:"),
+    );
+    const actions = await new AgentRuntime(
+      extractor(ev({ target_program: "online_mba", timeline: "this_intake", budget_band: "above_15L" })),
+      asker("And who makes the final call?") as never,
+    ).step(collectAll, state({ turns: [turn("agent", "hi"), turn("lead", "online, this intake, above 15L")] }));
+    expect(actions.map((a) => a.kind)).toEqual(["extract", "send"]);
+    expect(actions).toContainEqual({ kind: "send", text: "And who makes the final call?" });
+  });
+
+  it("still stops at required when that is what the journey asks for", async () => {
+    const actions = await new AgentRuntime(
+      extractor(ev({ target_program: "online_mba", timeline: "this_intake", budget_band: "above_15L" })),
+      asker("unused") as never,
+    ).step(spec, state({ turns: [turn("agent", "hi"), turn("lead", "online, this intake, above 15L")] }));
+    expect(actions.map((a) => a.kind)).toEqual(["extract", "score", "route", "complete"]);
   });
 });

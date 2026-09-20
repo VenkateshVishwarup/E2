@@ -102,7 +102,23 @@ const rawSpec = z.object({
   vertical: z.string().min(1),
   owner: z.string().min(1),
   agent: agentBlock,
-  objective: z.object({ goal: z.string().min(1), qualifies_when: z.string().min(1) }),
+  objective: z.object({
+    goal: z.string().min(1),
+    qualifies_when: z.string().min(1),
+    /**
+     * When the agent stops collecting.
+     *
+     * `required` finishes as soon as the required fields are established, which
+     * is cheapest — but every optional field carries score, so a journey whose
+     * threshold is out of reach on required evidence alone can never qualify
+     * anyone that way. `all` asks for everything declared, then scores.
+     *
+     * Defaults to `required`, because changing it changes what a published
+     * version does, and versions are immutable for a reason: the scores in the
+     * log were produced under the rule that was in force at the time.
+     */
+    collect: z.enum(["required", "all"]).default("required"),
+  }),
   evidence: z.record(evidenceField),
   policy: z.object({
     never: z.array(z.string()).default([]),
@@ -333,7 +349,12 @@ export function lintSpec(spec: JourneySpec): SpecWarning[] {
   }
 
   const required = requiredEvidenceFields(spec);
-  const reachable = required.reduce((sum, f) => sum + (bestPerField.get(f) ?? 0), 0);
+  const collectsAll = spec.objective.collect === "all";
+  // What the agent will actually go and get. A journey that collects every
+  // declared field can reach the optional weights too, so judging it against the
+  // required-only total would report a problem it does not have.
+  const collected = collectsAll ? Object.keys(spec.evidence) : required;
+  const reachable = collected.reduce((sum, f) => sum + (bestPerField.get(f) ?? 0), 0);
 
   const threshold = scoreThreshold(spec.objective.qualifies_when);
   if (threshold !== null && reachable < threshold) {
@@ -342,10 +363,13 @@ export function lintSpec(spec: JourneySpec): SpecWarning[] {
       .map(([f, w]) => `${f} (+${w})`);
     warnings.push({
       code: "unreachable_qualification",
-      message:
-        `required evidence can score at most ${reachable}, but qualifying needs ${threshold}. ` +
-        `The gap depends on optional evidence the runtime stops asking for once required ` +
-        `fields are complete: ${optional.join(", ") || "none"}. This journey cannot qualify anyone.`,
+      message: collectsAll
+        ? `every declared field can score at most ${reachable}, but qualifying needs ` +
+          `${threshold}. This journey cannot qualify anyone, whatever a lead says.`
+        : `required evidence can score at most ${reachable}, but qualifying needs ${threshold}. ` +
+          `The gap depends on optional evidence the runtime stops asking for once required ` +
+          `fields are complete: ${optional.join(", ") || "none"}. Either weight the required ` +
+          `fields to reach it, or set objective.collect: all so the agent asks for the rest.`,
     });
   }
   warnings.push(...lintMetrics(spec));

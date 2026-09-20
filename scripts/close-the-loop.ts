@@ -35,7 +35,7 @@ const V4 = readFileSync(join(HERE, "../packages/core/test/fixtures/mba-v4.yaml")
 // the only variable is who decides what happens next. Published unrun, because a
 // conversation strategy cannot be evaluated against transcripts a different
 // strategy produced — you talk to it on the Chat tab or simulate it.
-const V7 = readFileSync(join(HERE, "../packages/core/test/fixtures/mba-v7-open.yaml"), "utf8");
+const V8 = readFileSync(join(HERE, "../packages/core/test/fixtures/mba-v8-open.yaml"), "utf8");
 // The same v3 and v5 the M1 script publishes, so Replay and A/B still have
 // something to compare after this script has run. One command, whole console.
 const V3 = V4.replace("version: 4", "version: 3")
@@ -203,7 +203,7 @@ async function main() {
   await reseedVersion(registry, V3);
   await reseedVersion(registry, V4);
   await reseedVersion(registry, V5);
-  await reseedVersion(registry, V7);
+  await reseedVersion(registry, V8);
   // v4 cannot qualify anyone (its required evidence tops out below its own
   // threshold); v5 is the fix. Point live at the one worth serving.
   await registry.promote(JOURNEY, 5);

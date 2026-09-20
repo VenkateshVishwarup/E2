@@ -153,3 +153,24 @@ export function nextField(
 
   return pool.find((f) => spec.evidence[f]!.required) ?? pool[0]!;
 }
+
+/**
+ * Whether the agent has collected everything this journey asks it to.
+ *
+ * The one place the `collect` policy is interpreted, so the scripted strategy,
+ * the planner and the guardrail cannot disagree about when a conversation is
+ * finished. `exclude` carries fields the agent has already asked for as often as
+ * it may: a question that will not land must not hold a conversation open.
+ */
+export function collectionComplete(
+  spec: JourneySpec, evidence: Evidence, exclude: ReadonlySet<string> = new Set(),
+): boolean {
+  // `all` is strictly stronger than `required`, never weaker. Asking only
+  // "is there anything left to ask?" would report a conversation as finished
+  // when the one field it could not get was a required one — `exclude` removes
+  // it from the queue, and without this it would vanish from the check too.
+  if (!evidenceComplete(spec, evidence)) return false;
+  return spec.objective.collect === "all"
+    ? nextField(spec, evidence, exclude) === null
+    : true;
+}
