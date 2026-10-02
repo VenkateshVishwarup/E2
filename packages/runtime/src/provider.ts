@@ -233,7 +233,8 @@ export function credentialFingerprint(): string {
   const source = fromEnvFile.has("OPENAI_API_KEY")
     ? (envFilePath ?? ".env")
     : "inherited environment";
-  const suffix = isPlaceholder(key) ? " — PLACEHOLDER, not a real key" : "";
+  const suffix = forcedOffline() ? " — ignored: OFFLINE=1"
+               : isPlaceholder(key) ? " — PLACEHOLDER, not a real key" : "";
   return `${key.length} chars, ending ${key.slice(-4)} (from ${source})${suffix}`;
 }
 
@@ -272,6 +273,17 @@ export function isPlaceholder(key: string): boolean {
  * by a placeholder.
  */
 export function hasCredential(): boolean {
+  if (forcedOffline()) return false;
   const key = process.env.OPENAI_API_KEY;
   return Boolean(key) && !isPlaceholder(key!);
+}
+
+/**
+ * `OFFLINE=1` refuses the model whatever any .env says. Blanking
+ * `OPENAI_API_KEY` cannot do that, because the project .env overrides the
+ * environment by design — and an "offline" server that quietly calls the model
+ * is the one way to spend money while believing you are not.
+ */
+function forcedOffline(): boolean {
+  return process.env.OFFLINE === "1";
 }

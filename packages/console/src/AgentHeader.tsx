@@ -1,15 +1,21 @@
 import { useEffect, useState } from "react";
-import { item } from "./roadmap-data.js";
+import type { JourneySummary } from "./useVersions.js";
 
 /**
- * The agent's identity, shown where the agent is worked on rather than in the
- * masthead.
+ * Which journey you are looking at, and the switch between them.
  *
- * The masthead names the product; this names the thing you are editing. They
- * were the same line for a while, which made a single agent look like a global
- * setting instead of one of several you will eventually pick between.
+ * The masthead names the product; this names the thing on screen. They were
+ * the same line for a while, which made a single agent look like a global
+ * setting instead of one of several you pick between. It sits above every
+ * section whose screens are scoped to one journey, because a Findings or ROI
+ * screen that does not say whose numbers it shows is the same mistake.
  */
-export function AgentHeader({ journey, reload }: { journey: string; reload: number }) {
+export function AgentHeader({ journey, journeys, onSwitch, reload }: {
+  journey: string;
+  journeys: JourneySummary[] | null;
+  onSwitch: (journey: string) => void;
+  reload: number;
+}) {
   const [live, setLive] = useState<number | null>(null);
   const [count, setCount] = useState<number | null>(null);
   const [persona, setPersona] = useState<string | null>(null);
@@ -40,11 +46,19 @@ export function AgentHeader({ journey, reload }: { journey: string; reload: numb
     <header className="agent-header">
       <div>
         <div className="agent-name">
-          <select className="journey-select" value={journey} disabled
-                  title={item("journeys").will} aria-label="Agent">
-            <option value={journey}>{journey}</option>
+          {/* The current journey is always an option, even before the list
+              arrives, so the control never renders blank. */}
+          <select className="journey-select" value={journey} aria-label="Journey"
+                  disabled={!journeys || journeys.length < 2}
+                  onChange={(e) => onSwitch(e.target.value)}>
+            {(journeys?.some((j) => j.journey === journey)
+              ? journeys
+              : [{ journey }, ...(journeys ?? [])]
+            ).map((j) => <option key={j.journey} value={j.journey}>{j.journey}</option>)}
           </select>
-          <span className="soon-tag" title={item("journeys").will}>more agents soon</span>
+          {journeys && journeys.length > 1 && (
+            <span className="muted provenance">{journeys.length} journeys</span>
+          )}
         </div>
         <p className="muted agent-meta">
           {persona && <><code>{persona}</code> · </>}

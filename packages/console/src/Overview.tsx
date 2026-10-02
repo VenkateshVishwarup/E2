@@ -15,9 +15,7 @@ interface Finding { code: string; severity: string; claim: string; n: number }
 interface Insights { leadsAnalysed: number; findings: Finding[] }
 
 export function Overview(
-  { journey, versions, onGo }: {
-    journey: string; versions: number[]; onGo: (tab: string) => void;
-  },
+  { journey, onGo }: { journey: string; onGo: (tab: string) => void },
 ) {
   const [roi, setRoi] = useState<Report | null>(null);
   const [insights, setInsights] = useState<Insights | null>(null);
@@ -74,11 +72,8 @@ export function Overview(
 
   return (
     <>
-      <p className="muted">
-        Journey <code>{journey}</code> · v{versions[0] ?? "—"} is live ·{" "}
-        {versions.length} version{versions.length === 1 ? "" : "s"} published
-      </p>
-
+      {/* Which journey, and which version is live, is the header's job: it reads
+          the live pointer, where a line here once called the newest version live. */}
       <div className="metrics">
         <Metric label="conversations" value={total.leads.toLocaleString()} />
         <Metric label="qualified" value={qualified.toLocaleString()}

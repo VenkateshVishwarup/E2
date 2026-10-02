@@ -21,14 +21,14 @@ over the facts, so the platform never picks a definition on anyone's behalf.
 |---|---|---|
 | [Event spine](concepts/event-spine.md) | The append-only log and its two isolation axes | `core/src/events/` |
 | [Journey spec](concepts/journey-spec.md) | A typed YAML contract, not a prompt | `core/src/journey/spec.ts` |
-| [Version lifecycle](concepts/version-lifecycle.md) | Publish, try, promote, roll back | `core/src/journey/registry.ts` |
+| [Version lifecycle](concepts/version-lifecycle.md) | Publish, try, promote, roll back — and how a journey begins | `core/src/journey/registry.ts` |
 | [Metric predicates](concepts/metric-predicates.md) | Tenant-declared metrics over events | `core/src/metrics/predicate.ts` |
 | [Agent runtime](concepts/agent-runtime.md) | `step()` and the action contract | `runtime/src/step.ts` |
 | [Conversation strategy](concepts/conversation-strategy.md) | Deterministic or not, and the guardrail between | `runtime/src/planner.ts`, `guardrails.ts` |
 | [Evidence extraction](concepts/evidence-extraction.md) | The contract as a JSON Schema | `runtime/src/extractor.ts` |
 | [Tool broker](concepts/tool-broker.md) | The agent as an enforced principal | `runtime/src/broker.ts` |
 | [Counterfactual replay](concepts/replay.md) | Observed versus modelled, kept apart | `batch/src/replay/` |
-| [Simulation](concepts/simulation.md) | Personas, scorecards, thresholds | `batch/src/simulate/` |
+| [Simulation](concepts/simulation.md) | Personas, scorecards, thresholds, repeats as a range | `batch/src/simulate/` |
 | [Attribution](concepts/attribution.md) | ROI as a fold, with its assumptions | `intelligence/src/attribution/` |
 | [Findings](concepts/findings.md) | Seven detectors, and their significance bar | `intelligence/src/insights/` |
 | [Copilot](concepts/copilot.md) | Tools over folds, and the diff gate | `intelligence/src/copilot/` |

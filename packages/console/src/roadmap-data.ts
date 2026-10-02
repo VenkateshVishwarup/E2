@@ -28,15 +28,6 @@ export const ROADMAP: RoadmapItem[] = [
     horizon: "next",
   },
   {
-    id: "journeys",
-    title: "More than one journey",
-    will: "Create, list and switch between journeys — one per programme, per vertical, per " +
-          "client — each with its own versions, metrics and agents.",
-    today: "The registry is already keyed by journey and every event carries one. The " +
-           "console is pinned to a single journey; nothing beneath it is.",
-    horizon: "next",
-  },
-  {
     id: "bindings",
     title: "Real integrations",
     will: "Book into a live calendar and write to a live CRM, with credentials held in a " +
@@ -48,16 +39,15 @@ export const ROADMAP: RoadmapItem[] = [
   },
   {
     id: "variance",
-    title: "Variance bands for a non-deterministic agent",
-    will: "Run a non-deterministic version over the same cohort several times and report a " +
-          "band rather than a number. A single figure for an agent that may diverge is a " +
-          "point estimate of a distribution, and the honest comparison against a " +
-          "deterministic version is band against point.",
-    today: "Both strategies exist and are selectable per version, every planner decision " +
-           "is a MoveChosen event, and Simulate already compares two versions over " +
-           "generated conversations. Each run reports one number, and Replay says outright " +
-           "that it cannot see a strategy change — it runs over transcripts the other " +
-           "strategy produced.",
+    title: "Compare, range against range",
+    will: "Repeat both arms of a comparison over the same cohort and give the verdict on " +
+          "their ranges, so a non-deterministic version is not judged on whichever run it " +
+          "happened to draw.",
+    today: "Simulate already repeats a version over the same personas and reports the range " +
+           "of every figure, and how many runs each alert fired in. Compare still runs each " +
+           "arm once, so its verdict is one run against one run. Replay says outright that " +
+           "it cannot see a strategy change — it runs over transcripts the other strategy " +
+           "produced.",
     horizon: "next",
   },
   {

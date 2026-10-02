@@ -8,6 +8,14 @@ export interface SpecChange {
   after?: unknown;
 }
 
+/** One journey as a picker shows it: how many versions, and which one serves. */
+export interface JourneySummary {
+  journey: string;
+  versions: number;
+  latest: number;
+  live: number | null;
+}
+
 export class JourneyRegistry {
   constructor(private readonly pool: Pool, private readonly tenantId: string) {
     if (!tenantId) throw new Error("JourneyRegistry requires a tenantId");
@@ -123,6 +131,30 @@ export class JourneyRegistry {
       [this.tenantId, journey],
     );
     return rows.map((r) => Number(r.version));
+  }
+
+  /**
+   * Every journey this tenant has published, by name. A journey exists because a
+   * version of it was published — there is no separate create step, so there is
+   * no empty journey to list and nothing to keep in step with the versions.
+   */
+  async journeys(): Promise<JourneySummary[]> {
+    const { rows } = await this.pool.query<{
+      journey: string; versions: number; latest: number; live: number | null;
+    }>(
+      `SELECT v.journey, count(*)::int AS versions, max(v.version)::int AS latest,
+              l.version AS live
+       FROM journey_versions v
+       LEFT JOIN journey_live l ON l.tenant_id = v.tenant_id AND l.journey = v.journey
+       WHERE v.tenant_id = $1
+       GROUP BY v.journey, l.version
+       ORDER BY v.journey`,
+      [this.tenantId],
+    );
+    return rows.map((r) => ({
+      journey: r.journey, versions: Number(r.versions), latest: Number(r.latest),
+      live: r.live === null ? null : Number(r.live),
+    }));
   }
 
   async latest(journey: string): Promise<JourneySpec> {

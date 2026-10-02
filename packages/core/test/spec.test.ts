@@ -40,6 +40,22 @@ describe("parseSpec", () => {
     expect(s.tools.map((t) => t.capability)).toContain("crm.upsert_lead");
   });
 
+  it("rejects a journey name that cannot travel in a URL path unescaped", () => {
+    // The name is the path segment of every journey-scoped endpoint, and the
+    // console now lets someone type one.
+    for (const bad of ["MBA Admissions", "mba_admissions", "-leading-dash", "a/b"]) {
+      expect(() => parseSpec(yaml.replace(/^journey: .*$/m, `journey: ${bad}`)), bad)
+        .toThrow(/journey/i);
+    }
+    expect(parseSpec(yaml.replace(/^journey: .*$/m, "journey: pgdm-2027")).journey)
+      .toBe("pgdm-2027");
+  });
+
+  it("rejects a journey name longer than the API will route", () => {
+    expect(() => parseSpec(yaml.replace(/^journey: .*$/m, `journey: ${"a".repeat(121)}`)))
+      .toThrow(/journey/i);
+  });
+
   it("rejects a spec with no agent identity", () => {
     const bad = yaml.replace("identity: agent://engati/mba-admissions", "identity: ''");
     expect(() => parseSpec(bad)).toThrow(/identity/);

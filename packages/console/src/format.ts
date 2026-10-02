@@ -20,3 +20,13 @@ export function money(v: number | null | undefined, currency: string): string {
 /** A ratio as a percentage, or undefined when the denominator is zero. */
 export const rate = (n: number, of: number): string | undefined =>
   of === 0 ? undefined : `${((n / of) * 100).toFixed(1)}%`;
+
+/**
+ * A range across repeats of one cohort, collapsed to a single figure when both
+ * ends read the same once formatted — "3.0%–3.0%" would claim a spread the
+ * screen cannot show.
+ */
+export function spread(r: { min: number; max: number }, fmt: (v: number) => string): string {
+  const lo = fmt(r.min), hi = fmt(r.max);
+  return lo === hi ? lo : `${lo}–${hi}`;
+}

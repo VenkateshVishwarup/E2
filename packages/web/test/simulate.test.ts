@@ -74,6 +74,53 @@ describe("simulate routes", () => {
     expect(res.json().error).toMatch(/n must be/i);
   });
 
+  it("repeats a run over the same cohort when asked", async () => {
+    const run = vi.fn().mockResolvedValue(RUN);
+    const repeating = buildServer(deps({ simulate: { run, compare: vi.fn() } }) as never);
+    const res = await repeating.inject({
+      method: "POST", url: "/api/simulate",
+      payload: { journey: "mba-admissions-qualification", version: 4, n: 50, repeats: 3 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(run).toHaveBeenCalledWith("mba-admissions-qualification", 4, 50, undefined, 3);
+  });
+
+  it("runs once when repeats is not given", async () => {
+    const run = vi.fn().mockResolvedValue(RUN);
+    const once = buildServer(deps({ simulate: { run, compare: vi.fn() } }) as never);
+    await once.inject({
+      method: "POST", url: "/api/simulate",
+      payload: { journey: "mba-admissions-qualification", version: 4, n: 50 },
+    });
+    expect(run).toHaveBeenCalledWith("mba-admissions-qualification", 4, 50, undefined, 1);
+  });
+
+  it("rejects a repeat count outside what a range over repeats can honestly mean", async () => {
+    for (const repeats of [0, 6, 2.5, "3"]) {
+      const res = await app.inject({
+        method: "POST", url: "/api/simulate",
+        payload: { journey: "mba-admissions-qualification", version: 4, n: 10, repeats },
+      });
+      expect(res.statusCode, String(repeats)).toBe(400);
+      expect(res.json().error).toMatch(/repeats must be/i);
+    }
+  });
+
+  it("caps the cohort times its repeats, since every repeat is billed", async () => {
+    const res = await app.inject({
+      method: "POST", url: "/api/simulate",
+      payload: { journey: "mba-admissions-qualification", version: 4, n: 1000, repeats: 3 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/n × repeats/);
+  });
+
+  it("advertises the repeat ceiling beside the cohort ceiling", async () => {
+    const res = await app.inject({ url: "/api/limits" });
+    expect(res.json()).toMatchObject({ maxRepeats: 5 });
+    expect(res.json().maxCohort).toBeGreaterThan(0);
+  });
+
   it("compares two versions", async () => {
     const res = await app.inject({
       method: "POST", url: "/api/compare",

@@ -10,3 +10,4 @@ export * from "./eval/judge.js";
 export * from "./eval/alerts.js";
 export * from "./experiment/allocator.js";
 export * from "./experiment/compare.js";
+export * from "./eval/variance.js";

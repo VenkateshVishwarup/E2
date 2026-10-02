@@ -988,6 +988,16 @@ qualification: 2,172 input tokens, 334 output, of which only **54 were reasoning
   minimum. This confirms, with measurement, that caching is not a lever at this prompt
   size; it also means the prefix-ordering work buys nothing until prompts grow
 
+### Since M4
+
+- **2026-09-19/20 — the agent decides.** `strategy.kind: open`, the guardrail, grounded
+  answers from `knowledge:`, `max_asks_per_field`, `objective.collect`. Decisions 33–35
+- **2026-10-02 — more than one journey, and variance as a range.** The console lists,
+  switches between and creates journeys; Simulate repeats a cohort and reports the range of
+  every figure. Decisions 36–37. Also found by running it: `start:offline` was not offline
+  (decision 38), and Overview called the newest version live, which stopped being true when
+  publishing and promoting were separated
+
 ---
 
 ## 16. Workstreams for a Team
@@ -1037,6 +1047,12 @@ month three.
 | 18 | **Platform layers treated as ports**, not decided | Shared-vs-separate is explicitly unresolved upstream; ports make that survivable instead of blocking | Picking a side and rebuilding when the platform decides differently |
 | 19 | Eval harness **is** the data-quality validator | Validating against observed outcomes is ground truth; a second LLM with no ground truth measures correlation, not correctness | The proposed secondary-LLM validator pattern |
 | 20 | **OpenAI `gpt-5.6-sol`** as the model provider | Owner's decision (2026-09-04). Slightly cheaper than the Anthropic tier it replaces ($4/$20 vs $5/$25) with a 10× cached-input discount. The `step()` and `extract()` contracts did not change, so the swap touched one module — the first real test of the replaceable-runtime property in §5.4 | Anthropic Claude, as originally specified |
+| 38 | **`OFFLINE=1` refuses the model whatever `.env` says** (2026-10-02) | `.env` overrides the environment by design (a GUI app's stale credential cost an hour), so `start:offline` — which blanked `OPENAI_API_KEY` in the environment — had the key put straight back and quietly called the model. An explicit switch read by `hasCredential()`, the one gate every model-backed component already goes through, cannot be undone by a file | Letting the environment win over `.env` for an empty value (reopens the stale-credential failure); a separate offline entrypoint |
+| 37 | **A journey is created by publishing its first version; there is no create endpoint** (2026-10-02) | A journey is its versions. Listing reads them (`GET /api/journeys`), so there is no empty journey and no second record to drift from them. The name becomes a URL path segment, so `parseSpec` restricts it to `^[a-z0-9][a-z0-9-]*$` — the pattern the API document already claimed | A `journeys` table with its own lifecycle; leaving names unvalidated until the console made them easy to type |
+| 36 | **Variance is the same cohort repeated, reported as a range — and as identical when nothing varies** (2026-10-02) | Holding the personas fixed isolates what the model contributes; a different seed measures a different cohort. Up to five repeats is a range, not an interval, and is labelled so. Offline everything is deterministic, and saying so beats drawing a band of width zero that looks like a measurement | A bootstrap interval over repeats (implies precision five runs cannot carry); varying the seed per repeat |
+| 35 | **`objective.collect: required \| all` decides when the agent stops, through one definition** (2026-09-20) | A real lead routed cold at 35 who would have scored 50 with one more question: optional fields carry weight. Both strategies read `collectionComplete`, so a journey cannot finish on different terms depending on who chose the path. `required` stays the default so every published version behaves as before | Always collecting everything (cost, and changes published versions); per-strategy stopping rules |
+| 34 | **`max_asks_per_field` is counted over the whole conversation, and a stuck required field escalates** (2026-09-20) | Counting only the tail lets alternating fields loop. Closing an inconclusive lead records it as if it ran its course; a human is the honest outcome | A per-turn repeat check; closing when nothing is left to ask |
+| 33 | **An open agent proposes; code disposes** (2026-09-19) | `strategy.kind: open` lets the model choose a move from a declared repertoire, but `admit()` — pure, no model — is the only path to an action, and every refusal names a rule from a closed set so it can be counted. The disclosure, a request for a human, `escalate_when`, the turn budget, scoring and routing hold under both strategies; facts come only from `knowledge:`, verbatim | A free-form agent with prompt-level rules (unauditable); keeping the scripted cascade (cannot answer a question) |
 | 32 | **A live conversation and a simulated one share one action-to-event translation** | Two copies would diverge within a week, and every fold downstream — attribution, insights, replay, the copilot — would then quietly mean something different for live traffic than for sim. They differ in the two fields already modelled: `env` and `runId` | A separate live persistence path (faster to write, impossible to keep honest) |
 | 31 | **Publishing is deployment; there is no deploy step** | A journey version is immutable and self-contained, so "published" and "servable" are the same state. A separate deploy would be a second source of truth about which version is live | Explicit deploy/promote; a `status` column on versions |
 | 30 | **Seeds delete only what they own; chat leads are prefixed** | The seed scripts used `TRUNCATE`, which would have deleted every real conversation the moment anyone reseeded. Owning-by-prefix keeps fixtures re-runnable without that risk | A global reset flag (one mistake away from the same outcome) |

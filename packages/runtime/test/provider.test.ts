@@ -14,6 +14,7 @@ afterEach(() => {
   if (saved === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = saved;
   delete process.env.MF_PROBE;
+  delete process.env.OFFLINE;
 });
 
 describe("loadEnvFile", () => {
@@ -96,6 +97,32 @@ describe("loadEnvFile", () => {
     writeFileSync(without, "MF_PROBE=x\n");
     loadEnvFile(without);
     expect(credentialFingerprint()).toContain("inherited environment");
+  });
+});
+
+describe("OFFLINE=1", () => {
+  it("wins over a key in .env, which an empty OPENAI_API_KEY cannot", () => {
+    // Regression: `start:offline` blanked the key in the environment, and the
+    // project .env — which overrides the environment by design — put it back.
+    // The "offline" server was calling the model.
+    const f = join(dir, ".env");
+    writeFileSync(f, "OPENAI_API_KEY=sk-real-riwA\n");
+    process.env.OFFLINE = "1";
+    loadEnvFile(f);
+    expect(process.env.OPENAI_API_KEY).toBe("sk-real-riwA");
+    expect(hasCredential()).toBe(false);
+  });
+
+  it("says the key is being ignored, rather than that there is none", () => {
+    process.env.OPENAI_API_KEY = "sk-real-riwA";
+    process.env.OFFLINE = "1";
+    expect(credentialFingerprint()).toMatch(/ignored.*OFFLINE=1/);
+  });
+
+  it("is off unless set to exactly 1", () => {
+    process.env.OPENAI_API_KEY = "sk-real-riwA";
+    process.env.OFFLINE = "0";
+    expect(hasCredential()).toBe(true);
   });
 });
 

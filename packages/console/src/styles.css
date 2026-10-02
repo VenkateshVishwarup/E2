@@ -87,6 +87,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .metric { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: var(--card); }
 .metric-label { color: var(--muted); font-size: 12px; }
 .metric-value { font-size: 22px; font-variant-numeric: tabular-nums; }
+.metric-range { font-size: 11px; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .verdict { font-size: 18px; margin: 16px 0 4px; }
 
 .ask { display: flex; gap: 8px; margin: 16px 0 10px; }
@@ -167,6 +168,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 }
 .picker select:disabled { opacity: .5; }
 
+/* Naming a new journey: one field, inline with the actions it belongs to. */
+.new-journey { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; margin: 0 0 14px; }
+.name-input {
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card); color: var(--fg); font: inherit; min-width: 240px;
+}
+.name-problem { flex-basis: 100%; margin: 0; font-size: 12px; }
+
 .masthead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .masthead h1 { margin: 0; }
 .sections { display: flex; gap: 6px; margin: 18px 0 0; }
@@ -203,7 +212,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px;
   background: var(--card); color: var(--muted); font: inherit; font-size: 13px;
 }
-.journey-select:disabled { opacity: 1; cursor: not-allowed; }
+.journey-select:disabled { opacity: 1; cursor: default; }
 .soon-tag {
   display: inline-block; padding: 1px 7px; border-radius: 999px;
   border: 1px dashed var(--line); color: var(--muted);

@@ -3,6 +3,7 @@ import type { JourneyRegistry } from "@midfunnel/core/journey/registry";
 import type { ReplayEngine } from "@midfunnel/batch/replay/engine";
 import type { RunSummary } from "@midfunnel/batch/simulate/runner";
 import type { Alert, RunQuality } from "@midfunnel/batch/eval/alerts";
+import type { VarianceReport } from "@midfunnel/batch/eval/variance";
 import type { Scoreboard } from "@midfunnel/batch/experiment/compare";
 import type { AttributionEngine } from "@midfunnel/intelligence/attribution/engine";
 import type { InsightEngine } from "@midfunnel/intelligence/insights/engine";
@@ -10,13 +11,17 @@ import type { Answer } from "@midfunnel/intelligence/copilot/types";
 import type { ChatReply, ChatState, StartSession } from "./chat-service.js";
 
 export interface SimulationResult {
+  /** The first repeat's, so a caller that ignores `variance` reads one run. */
   summary: RunSummary;
   quality: RunQuality;
   alerts: Alert[];
+  /** Present only when the cohort was run more than once. */
+  variance?: VarianceReport;
 }
 
 export interface SimulationService {
-  run(journey: string, version: number, n: number, seed?: number): Promise<SimulationResult>;
+  run(journey: string, version: number, n: number, seed?: number, repeats?: number):
+    Promise<SimulationResult>;
   compare(journey: string, va: number, vb: number, n: number, seed?: number): Promise<Scoreboard>;
 }
 

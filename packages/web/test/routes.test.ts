@@ -82,6 +82,30 @@ describe("web routes", () => {
     expect(res.json()).toMatchObject({ ok: true });
   });
 
+  it("lists every journey, so the console is not pinned to one", async () => {
+    const res = await app.inject({ url: "/api/journeys" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      journeys: [{ journey: "mba-admissions-qualification", versions: 2, latest: 4, live: 3 }],
+    });
+  });
+
+  it("lists a journey as soon as its first version is published, and makes it live", async () => {
+    const yaml = V4.replace(/^journey: .*$/m, "journey: pgdm-admissions").replace("version: 4", "version: 1");
+    const published = await app.inject({ method: "POST", url: "/api/journeys/publish", payload: { yaml } });
+    expect(published.statusCode).toBe(200);
+
+    const names = (await app.inject({ url: "/api/journeys" })).json().journeys;
+    expect(names).toContainEqual({ journey: "pgdm-admissions", versions: 1, latest: 1, live: 1 });
+  });
+
+  it("refuses to publish a journey whose name a URL cannot carry", async () => {
+    const yaml = V4.replace(/^journey: .*$/m, "journey: PGDM Admissions");
+    const res = await app.inject({ method: "POST", url: "/api/journeys/publish", payload: { yaml } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/journey name/);
+  });
+
   it("lists journey versions newest first", async () => {
     const res = await app.inject({ url: "/api/journeys/mba-admissions-qualification/versions" });
     expect(res.json()).toMatchObject({ versions: [4, 3] });

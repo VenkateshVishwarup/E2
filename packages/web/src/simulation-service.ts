@@ -7,6 +7,7 @@ import { ScriptedReplier, ModelReplier, type Replier } from "@midfunnel/batch/si
 import { SimulationRunner, type RunSummary } from "@midfunnel/batch/simulate/runner";
 import { scoreConversation, type Scorecard } from "@midfunnel/batch/eval/scorecard";
 import { aggregate, evaluateAlerts } from "@midfunnel/batch/eval/alerts";
+import { varianceAcross, type RepeatRun } from "@midfunnel/batch/eval/variance";
 import { compareRuns, type ArmResult, type Scoreboard } from "@midfunnel/batch/experiment/compare";
 import type { SimulationResult, SimulationService } from "./deps.js";
 
@@ -25,10 +26,28 @@ export class LiveSimulationService implements SimulationService {
     private readonly replier: Replier,
   ) {}
 
-  async run(journey: string, version: number, n: number, seed = 1): Promise<SimulationResult> {
-    const { summary, cards } = await this.execute(journey, version, n, seed);
-    const quality = aggregate(cards);
-    return { summary, quality, alerts: evaluateAlerts(quality) };
+  /**
+   * `repeats` runs the SAME personas through the version that many times. A
+   * deterministic configuration produces identical repeats and the report says
+   * so; anything with a model in the loop produces a range, which is the honest
+   * figure for an agent that may not take the same path twice.
+   */
+  async run(
+    journey: string, version: number, n: number, seed = 1, repeats = 1,
+  ): Promise<SimulationResult> {
+    const runs: RepeatRun[] = [];
+    let first: RunSummary | undefined;
+    for (let i = 0; i < repeats; i++) {
+      const { summary, cards } = await this.execute(journey, version, n, seed, i);
+      const quality = aggregate(cards);
+      runs.push({ runId: summary.runId, quality, alerts: evaluateAlerts(quality) });
+      first ??= summary;
+    }
+    const { quality, alerts } = runs[0]!;
+    return {
+      summary: first!, quality, alerts,
+      ...(repeats > 1 ? { variance: varianceAcross(runs) } : {}),
+    };
   }
 
   async compare(
@@ -46,12 +65,14 @@ export class LiveSimulationService implements SimulationService {
     return compareRuns(arm(a, va), arm(b, vb), a.cards, b.cards);
   }
 
-  private async execute(journey: string, version: number, n: number, seed: number) {
+  private async execute(journey: string, version: number, n: number, seed: number, repeat = 0) {
     const spec = await this.registry.get(journey, version);
     const personas = generatePersonas(spec, n, seed);
     const store = new EventStore(this.pool, this.tenantId, "sim");
 
-    const runId = `run_${version}_${seed}_${Date.now()}`;
+    // The repeat is in the id because two runs can start in the same
+    // millisecond, and a shared runId would fold both into one set of leads.
+    const runId = `run_${version}_${seed}_${Date.now()}_${repeat}`;
     const summary = await new SimulationRunner(store, this.runtime, this.replier)
       .run(spec, personas, { runId });
 

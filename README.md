@@ -62,6 +62,10 @@ process a stale credential it never asked for is an expensive hour to lose. Leav
 empty rather than writing a placeholder — a placeholder that looks like a key is detected
 and refused, but an unrecognised one would just produce a confident 401.
 
+To run offline with a key in `.env`, set `OFFLINE=1` — `npm run start:offline -w
+@midfunnel/web` does. Blanking the key in the environment cannot do it, for the same reason:
+`.env` overrides the environment, and puts the key straight back.
+
 ---
 
 ## Try it in two minutes
@@ -74,6 +78,9 @@ and refused, but an unrecognised one would just produce a confident 401.
 3. **Agent → Journey** again — *Make it live*. Real traffic gets it from the next session,
    and rolling back is promoting the previous version.
 4. **Performance → ROI** — your conversation is in there, counted, with its token cost.
+5. **Agent → Journey → New journey** — copy the spec under a new name, change what should
+   differ, publish. The journey picker above every screen now has two, each with its own
+   versions, conversations and numbers.
 
 That loop is the product: author a contract, deploy it by publishing it, talk to it, and
 see what it cost against what it earned.
@@ -87,6 +94,9 @@ The console has four sections, ordered by where you land and where you stay:
 | **Experiments** | Simulate · Compare · Replay | try a change before it meets real traffic |
 | **Roadmap** | | what E2 does not do yet |
 
+The journey picker sits above the first three: every screen in them is scoped to one journey,
+and says which.
+
 ---
 
 ## The demo, in eight moments
@@ -96,7 +106,7 @@ The console has four sections, ordered by where you land and where you stay:
 | 0 | **Author, try, then ship** — edit the YAML, publish it, talk to it on Chat, then promote it. Publishing is not shipping | Agent → Journey | Every deployment starts from scratch |
 | 1 | **The money shot** — replay a real cohort through two versions, lift with a confidence interval, drill into the divergent conversations | Replay tab | *"Will customers pay more?"* |
 | 2 | **Declare, don't prompt** — change `decision_maker` from optional to required. That is the entire edit | `journeys/*.yaml`, diff endpoint | Every deployment starts from scratch |
-| 3 | **Sandbox in 60 seconds** — 500 personas against a new version before one real lead sees it | Experiments → Simulate | No way to set up a sandbox |
+| 3 | **Sandbox in 60 seconds** — 500 personas against a new version before one real lead sees it. Repeat the same cohort and a non-deterministic agent reports a range, not a number | Experiments → Simulate | No way to set up a sandbox |
 | 3b | **Live A/B** — start a chat with a split and the allocator assigns deterministically; a new version takes real traffic without touching the old one | Agent → Chat | Cannot A/B a live bot |
 | 4 | **Break it on purpose** — ship a bad version; the eval harness catches the policy breach and the alert fires | Experiments → Simulate | No quality tracking |
 | 5 | **A/B scoreboard** — two versions over one paired cohort | Experiments → Compare | No A/B on a live bot |
@@ -122,13 +132,13 @@ missing screen and a missing foundation — and almost all of these are the form
 
 | | |
 |---|---|
-| **Next** | WhatsApp and voice channels · more than one journey · real CRM and calendar bindings |
+| **Next** | WhatsApp and voice channels · real CRM and calendar bindings · Compare judged range against range |
 | **Planned** | Alert delivery · parallel run against an incumbent · multi-tenancy |
 | **Later** | Cross-customer benchmarks · on-premise packaging · an agent registry screen |
 
 Inline too, where you would reach for the thing: the channel selector in Chat lists WhatsApp
-and voice as coming; the masthead says one journey today; the editor says the `tools:`
-privileges are enforced but the bindings behind them are mocks.
+and voice as coming; the editor says the `tools:` privileges are enforced but the bindings
+behind them are mocks.
 
 ---
 
@@ -268,7 +278,7 @@ deterministic extractor, every number stays real, and the deployment cannot cost
 ## Tests
 
 ```bash
-npm test          # 363 tests
+npm test          # 572 tests
 npm run typecheck
 ```
 

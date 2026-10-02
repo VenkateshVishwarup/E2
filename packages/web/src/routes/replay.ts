@@ -29,6 +29,16 @@ export function registerRoutes(app: FastifyInstance, deps: ServerDeps): void {
   app.get("/health", async () => ({ ok: true }));
   app.get("/api/health", async () => ({ ok: true }));
 
+  // Every journey the tenant has published. There is no create endpoint: a
+  // journey comes into being when its first version is published.
+  app.get("/api/journeys", async (_req, reply) => {
+    try {
+      return { journeys: await deps.registry.journeys() };
+    } catch (err) {
+      return reply.code(statusFor(err)).send({ error: (err as Error).message });
+    }
+  });
+
   app.get<{ Params: { journey: string } }>(
     "/api/journeys/:journey/versions",
     async (req) => {

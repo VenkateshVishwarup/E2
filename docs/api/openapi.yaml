@@ -133,6 +133,34 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/journeys:
+    get:
+      operationId: listJourneys
+      tags: [Journeys]
+      summary: List every journey this tenant has published
+      description: |
+        One entry per journey, sorted by name, with how many versions it has, the newest,
+        and the one serving live traffic — which is usually not the newest, because
+        publishing makes a version exist and promoting makes it the one real leads meet.
+
+        A journey exists because a version of it was published: there is no empty journey
+        to list, and nothing to keep in step with the versions. Use it to populate a
+        journey picker; every other journey-scoped endpoint takes the `journey` name it
+        returns.
+      responses:
+        "200":
+          description: Every published journey, by name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JourneyList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/journeys/{journey}/versions:
     get:
       operationId: listJourneyVersions
@@ -329,6 +357,12 @@ paths:
         Lint warnings are returned with the published version rather than blocking it: a
         spec may legitimately rely on optional evidence a lead volunteers, and the platform
         should not be the judge of that.
+
+        **This is also how a journey is created.** There is no separate create endpoint: a
+        spec whose `journey:` name has never been published starts that journey, and its
+        first version goes live at once, because a journey with no live version serves
+        nobody. The name must be lowercase letters, digits and hyphens — it becomes the
+        path segment of every journey-scoped endpoint — and a name that is not is a 400.
       requestBody:
         required: true
         content:
@@ -337,7 +371,9 @@ paths:
               $ref: "#/components/schemas/DraftSpec"
       responses:
         "200":
-          description: Published, and live for new conversations.
+          description: |
+            Published. The first version of a journey is also made live; any later version
+            exists and can be talked to, but waits to be promoted.
           content:
             application/json:
               schema:
@@ -502,6 +538,14 @@ paths:
         This is how a new version is checked before a real lead meets it. Alerts fire on
         declared thresholds — a policy breach or an evidence-collection drop — so a bad
         version is caught here rather than in production.
+
+        Set `repeats` to run the **same** personas through the version several times. A
+        non-deterministic agent may not take the same path twice, so one run is a point
+        estimate of a distribution; the response then carries `variance`, the range of
+        every quality figure across the repeats and how many of them each alert fired in.
+        With no model configured nothing in the loop varies, and `variance.identical`
+        says so rather than drawing a band of width zero. `n × repeats` is capped at
+        `maxCohort`, because every repeat is billed.
       requestBody:
         required: true
         content:
@@ -966,6 +1010,64 @@ components:
           example: true
       example:
         ok: true
+
+    JourneySummary:
+      type: object
+      description: One journey as a picker shows it.
+      required: [journey, versions, latest, live]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: "^[a-z0-9][a-z0-9-]*$"
+          description: The journey's stable name, as declared by `journey:` in its spec.
+          example: mba-admissions-qualification
+        versions:
+          type: integer
+          minimum: 1
+          description: How many versions have been published.
+          example: 5
+        latest:
+          type: integer
+          minimum: 1
+          description: The newest published version — not necessarily the one serving.
+          example: 8
+        live:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: |
+            The version new conversations get by default. Null only if the live pointer
+            was removed out of band; publishing a journey's first version always sets it.
+          example: 7
+      example:
+        journey: mba-admissions-qualification
+        versions: 5
+        latest: 8
+        live: 7
+
+    JourneyList:
+      type: object
+      required: [journeys]
+      additionalProperties: false
+      properties:
+        journeys:
+          type: array
+          description: Every journey this tenant has published, sorted by name.
+          items:
+            $ref: "#/components/schemas/JourneySummary"
+      example:
+        journeys:
+          - journey: mba-admissions-qualification
+            versions: 5
+            latest: 8
+            live: 7
+          - journey: pgdm-admissions
+            versions: 1
+            latest: 1
+            live: 1
 
     JourneyVersionList:
       type: object
@@ -1776,14 +1878,22 @@ components:
 
     Limits:
       type: object
-      required: [maxCohort, offline]
+      required: [maxCohort, maxRepeats, offline]
       additionalProperties: false
       properties:
         maxCohort:
           type: integer
           minimum: 1
-          description: Largest simulated or compared cohort this deployment will run.
+          description: |
+            Largest simulated or compared cohort this deployment will run. For a repeated
+            simulation it caps `n × repeats`, the conversations actually billed.
           example: 60
+        maxRepeats:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Most times one simulation may repeat its cohort.
+          example: 5
         offline:
           type: boolean
           description: |
@@ -1791,6 +1901,7 @@ components:
           example: false
       example:
         maxCohort: 60
+        maxRepeats: 5
         offline: false
 
     SimulateRequest:
@@ -1823,10 +1934,20 @@ components:
             on stage is the result from rehearsal.
           default: 1
           example: 1
+        repeats:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 1
+          description: |
+            How many times to run the same personas through the version. Above 1, the
+            response carries `variance`. `n × repeats` must not exceed `maxCohort`.
+          example: 3
       example:
         journey: mba-admissions-qualification
-        version: 4
-        n: 500
+        version: 8
+        n: 200
+        repeats: 3
 
     CompareRequest:
       type: object
@@ -2078,6 +2199,10 @@ components:
 
     SimulationResult:
       type: object
+      description: |
+        One run's summary, quality and alerts. When the cohort was repeated these are the
+        first repeat's — so a client that ignores `variance` reads exactly what a single
+        run would have told it — and `variance` holds every repeat.
       required: [summary, quality, alerts]
       additionalProperties: false
       properties:
@@ -2090,6 +2215,8 @@ components:
           description: Empty when the run cleared every threshold.
           items:
             $ref: "#/components/schemas/Alert"
+        variance:
+          $ref: "#/components/schemas/VarianceReport"
       example:
         summary:
           runId: run_9c2f1a
@@ -2113,6 +2240,137 @@ components:
           qualifiedRate: 0.236
           meanTurns: 6.4
         alerts: []
+
+    MetricRange:
+      type: object
+      description: |
+        The lowest, highest and mean value of one quality figure across the repeats of a
+        cohort. A range over a handful of repeats, not a confidence interval.
+      required: [min, max, mean]
+      additionalProperties: false
+      properties:
+        min:
+          type: number
+          format: double
+          minimum: 0
+          example: 0.03
+        max:
+          type: number
+          format: double
+          minimum: 0
+          example: 0.06
+        mean:
+          type: number
+          format: double
+          minimum: 0
+          example: 0.045
+      example:
+        min: 0.03
+        max: 0.06
+        mean: 0.045
+
+    RepeatRun:
+      type: object
+      description: One repeat of the cohort, so a range can be traced to the runs behind it.
+      required: [runId, quality, alerts]
+      additionalProperties: false
+      properties:
+        runId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The run whose `sim`-scoped events this repeat wrote.
+          example: run_8_1_1759420800000_1
+        quality:
+          $ref: "#/components/schemas/RunQuality"
+        alerts:
+          type: array
+          description: |
+            The alerts that fired on this repeat, whole rather than as ids: one that fired
+            only on a later repeat still has to be explained, and its message carries the
+            value observed on that repeat.
+          items:
+            $ref: "#/components/schemas/Alert"
+      example:
+        runId: run_8_1_1759420800000_1
+        quality:
+          n: 200
+          meanCompleteness: 0.91
+          meanCorrectness: 0.97
+          violationRate: 0
+          hallucinationRate: 0.005
+          ghostRate: 0.12
+          escalationRate: 0.31
+          qualifiedRate: 0.06
+          meanTurns: 6.2
+        alerts:
+          - id: escalation_rate
+            severity: warn
+            message: 31.0% escalated to a human
+            observed: 0.31
+            threshold: 0.3
+
+    VarianceReport:
+      type: object
+      description: |
+        The spread of a version's results over repeated runs of one cohort. Holding the
+        personas fixed isolates what the model contributes — the planner, the extractor
+        and, when a model plays them, the personas — from the sampling variance of a
+        different cohort. With a model configured even a deterministic version varies,
+        because extraction and persona replies are model calls; the difference between a
+        deterministic and a non-deterministic version's ranges is what the strategy adds.
+      required: [repeats, identical, ranges, alertFrequency, runs]
+      additionalProperties: false
+      properties:
+        repeats:
+          type: integer
+          minimum: 2
+          maximum: 5
+          example: 3
+        identical:
+          type: boolean
+          description: |
+            Every repeat produced the same figures and fired the same alerts. True when
+            nothing in the loop is a model — the offline extractor, planner and personas are
+            all deterministic — and reported as such rather than as a band of width zero.
+          example: false
+        ranges:
+          type: object
+          description: |
+            One range per quality figure, keyed by the `RunQuality` field it ranges over.
+            `meanCorrectness` is null when no repeat had ground truth to grade against.
+          additionalProperties:
+            allOf:
+              - $ref: "#/components/schemas/MetricRange"
+            nullable: true
+          example:
+            qualifiedRate: { min: 0.03, max: 0.06, mean: 0.045 }
+            escalationRate: { min: 0.27, max: 0.31, mean: 0.29 }
+        alertFrequency:
+          type: object
+          description: |
+            How many of the repeats each alert fired in. An alert that fires in some
+            repeats and not others is the agent's variance showing up as risk, which no
+            single run can reveal.
+          additionalProperties:
+            type: integer
+            minimum: 1
+            maximum: 5
+          example: { escalation_rate: 2 }
+        runs:
+          type: array
+          minItems: 2
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/RepeatRun"
+      example:
+        repeats: 3
+        identical: false
+        ranges:
+          qualifiedRate: { min: 0.03, max: 0.06, mean: 0.045 }
+          escalationRate: { min: 0.27, max: 0.31, mean: 0.29 }
+        alertFrequency: { escalation_rate: 2 }
+        runs: []
 
     ArmResult:
       type: object

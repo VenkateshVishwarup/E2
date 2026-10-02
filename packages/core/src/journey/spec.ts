@@ -96,8 +96,17 @@ const strategyBlock = z.object({
   reasoning_effort: z.enum(["low", "medium", "high"]).default("medium"),
 }).default({});
 
+/**
+ * A journey's name is the path segment of every journey-scoped endpoint, so it
+ * is held to what a URL carries without escaping. The API document states the
+ * same pattern; this is where it is enforced.
+ */
+const JOURNEY_NAME = /^[a-z0-9][a-z0-9-]*$/;
+
 const rawSpec = z.object({
-  journey: z.string().min(1),
+  journey: z.string().max(120, "journey name must be at most 120 characters")
+    .regex(JOURNEY_NAME,
+      "journey name must be lowercase letters, digits and hyphens, starting with a letter or digit"),
   version: z.number().int().positive(),
   vertical: z.string().min(1),
   owner: z.string().min(1),

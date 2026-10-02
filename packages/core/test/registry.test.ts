@@ -127,3 +127,32 @@ describe("publishing versus going live", () => {
     expect(await reg.liveVersion("no-such-journey")).toBeNull();
   });
 });
+
+describe("listing journeys", () => {
+  const PGDM = V4.replace(/^journey: .*$/m, "journey: pgdm-admissions");
+
+  it("lists each journey once, with its version count, newest and live version", async () => {
+    await reg.publish(V3);
+    await reg.publish(V4);
+    await reg.publish(PGDM);
+    await reg.promote("mba-admissions-qualification", 4);
+
+    expect(await reg.journeys()).toEqual([
+      { journey: "mba-admissions-qualification", versions: 2, latest: 4, live: 4 },
+      { journey: "pgdm-admissions", versions: 1, latest: 4, live: 4 },
+    ]);
+  });
+
+  it("reports a journey whose live version is not its newest, which is the normal case", async () => {
+    await reg.publish(V3);
+    await reg.publish(V4);
+    expect(await reg.journeys()).toEqual([
+      { journey: "mba-admissions-qualification", versions: 2, latest: 4, live: 3 },
+    ]);
+  });
+
+  it("never lists another tenant's journeys", async () => {
+    await reg.publish(V4);
+    expect(await new JourneyRegistry(pool, "t2").journeys()).toEqual([]);
+  });
+});
