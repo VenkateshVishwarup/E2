@@ -64,20 +64,33 @@ export function registerSimulateRoutes(app: FastifyInstance, deps: ServerDeps): 
     },
   );
 
-  app.post<{ Body: { journey?: unknown; a?: unknown; b?: unknown; n?: unknown; seed?: unknown } }>(
+  app.post<{ Body: { journey?: unknown; a?: unknown; b?: unknown; n?: unknown; seed?: unknown; repeats?: unknown } }>(
     "/api/compare",
     async (req, reply) => {
-      const { journey, a, b, n, seed } = req.body ?? {};
+      const { journey, a, b, n, seed, repeats = 1 } = req.body ?? {};
       if (typeof journey !== "string" || !Number.isInteger(a) || !Number.isInteger(b)) {
         return reply.code(400).send({ error: "journey (string), a and b (integers) are required" });
       }
       if (badCohort(n)) {
         return reply.code(400).send({ error: `n must be an integer between 1 and ${MAX_COHORT}` });
       }
+      if (!Number.isInteger(repeats) || (repeats as number) < 1 || (repeats as number) > MAX_REPEATS) {
+        return reply.code(400).send({ error: `repeats must be an integer between 1 and ${MAX_REPEATS}` });
+      }
+      // Both arms run every repeat, so the bill is twice what Simulate's cap
+      // allows for the same numbers. Charge for it in the limit, not in surprise.
+      const conversations = (n as number) * (repeats as number) * 2;
+      if (conversations > MAX_COHORT) {
+        return reply.code(400).send({
+          error: `n × repeats × 2 arms must be at most ${MAX_COHORT}; ` +
+                 `${n} × ${repeats} × 2 is ${conversations}`,
+        });
+      }
       try {
         return await deps.simulate.compare(
           journey, a as number, b as number, n as number,
           Number.isInteger(seed) ? (seed as number) : undefined,
+          repeats as number,
         );
       } catch (err) {
         return reply.code(statusFor(err)).send({ error: (err as Error).message });

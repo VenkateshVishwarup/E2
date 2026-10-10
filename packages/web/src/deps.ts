@@ -23,7 +23,9 @@ export interface SimulationResult {
 export interface SimulationService {
   run(journey: string, version: number, n: number, seed?: number, repeats?: number):
     Promise<SimulationResult>;
-  compare(journey: string, va: number, vb: number, n: number, seed?: number): Promise<Scoreboard>;
+  compare(
+    journey: string, va: number, vb: number, n: number, seed?: number, repeats?: number,
+  ): Promise<Scoreboard>;
 }
 
 /** Both the model-backed Copilot and the OfflineCopilot satisfy this. */

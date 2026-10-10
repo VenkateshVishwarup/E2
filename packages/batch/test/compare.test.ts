@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { aggregate } from "../src/eval/alerts.js";
-import { compareRuns, type ArmResult } from "../src/experiment/compare.js";
+import { compareRuns, type ArmResult , compareRanges } from "../src/experiment/compare.js";
+import type { VarianceReport } from "../src/eval/variance.js";
 import type { Scorecard } from "../src/eval/scorecard.js";
 
 const card = (over: Partial<Scorecard> = {}): Scorecard => ({
@@ -95,5 +96,67 @@ describe("compareRuns", () => {
     const a = [card({ evidenceCorrectness: null })];
     const b = [card({ evidenceCorrectness: 1 })];
     expect(compareRuns(arm("x", a), arm("y", b), a, b).correctnessDelta).toBeNull();
+  });
+});
+
+describe("compareRanges", () => {
+  const range = (min: number, max: number) => ({ min, max, mean: (min + max) / 2 });
+  const report = (min: number, max: number, over: Partial<VarianceReport> = {}): VarianceReport => ({
+    repeats: 3,
+    identical: min === max,
+    ranges: {
+      qualifiedRate: range(min, max), meanCompleteness: null, meanCorrectness: null,
+      escalationRate: null, ghostRate: null, violationRate: null,
+      hallucinationRate: null, meanTurns: null,
+    },
+    alertFrequency: {},
+    runs: [],
+    ...over,
+  });
+
+  it("calls it for B only when B's worst run beat A's best", () => {
+    // A weaker bar would be a strong claim from a handful of repeats.
+    expect(compareRanges(report(0.10, 0.20), report(0.30, 0.40), "b_better"))
+      .toMatchObject({ verdict: "b_better", agreesWithSingleRun: true });
+  });
+
+  it("calls it for A the same way round", () => {
+    expect(compareRanges(report(0.30, 0.40), report(0.10, 0.20), "a_better")!.verdict)
+      .toBe("a_better");
+  });
+
+  it("is inconclusive the moment the ranges touch", () => {
+    expect(compareRanges(report(0.10, 0.30), report(0.30, 0.50), "b_better")!.verdict)
+      .toBe("inconclusive");
+  });
+
+  it("flags a single-run winner the ranges say was a draw", () => {
+    // The reason this exists: one run picked a winner, repetition took it away.
+    const r = compareRanges(report(0.20, 0.40), report(0.25, 0.45), "b_better")!;
+    expect(r.verdict).toBe("inconclusive");
+    expect(r.agreesWithSingleRun).toBe(false);
+  });
+
+  it("agrees when both say inconclusive", () => {
+    expect(compareRanges(report(0.20, 0.40), report(0.25, 0.45), "inconclusive")!
+      .agreesWithSingleRun).toBe(true);
+  });
+
+  it("says when there is no range to compare", () => {
+    // Nothing in the loop can vary, so a band of width zero is not a measurement.
+    const r = compareRanges(report(0.3, 0.3), report(0.5, 0.5), "b_better")!;
+    expect(r.identical).toBe(true);
+    expect(r.verdict).toBe("b_better");
+  });
+
+  it("reports the smaller repeat count when the arms differ", () => {
+    expect(compareRanges(report(0.1, 0.2, { repeats: 5 }), report(0.3, 0.4, { repeats: 3 }), "b_better")!
+      .repeats).toBe(3);
+  });
+
+  it("returns nothing when a run produced no qualified rate at all", () => {
+    const blank = report(0, 0);
+    blank.ranges.qualifiedRate = null;
+    expect(compareRanges(blank, report(0.3, 0.4), "inconclusive")).toBeNull();
   });
 });

@@ -51,16 +51,18 @@ export const ROADMAP: RoadmapItem[] = [
   },
   {
     id: "variance",
-    title: "Compare, range against range",
-    will: "Repeat both arms of a comparison over the same cohort and give the verdict on " +
-          "their ranges, so a non-deterministic version is not judged on whichever run it " +
-          "happened to draw.",
-    today: "Simulate already repeats a version over the same personas and reports the range " +
-           "of every figure, and how many runs each alert fired in. Compare still runs each " +
-           "arm once, so its verdict is one run against one run. Replay says outright that " +
-           "it cannot see a strategy change — it runs over transcripts the other strategy " +
-           "produced.",
-    horizon: "next",
+    title: "Enough repeats to call it an interval",
+    will: "Repeat a version enough times to put a confidence interval around its figures " +
+          "rather than a range, and run the repeats concurrently so doing so is not a " +
+          "reason to avoid it.",
+    today: "Simulate repeats a version over the same personas, and Compare repeats both " +
+           "arms, reporting the range of every figure and giving the verdict on whether " +
+           "the two ranges overlap at all — so a single run that picked a winner is told " +
+           "it picked a draw. The bar is deliberately strict: the winner's worst run must " +
+           "beat the loser's best. Repeats are capped at five and run one after another, " +
+           "which is a range over a handful of draws and is named as one, never as an " +
+           "interval.",
+    horizon: "planned",
   },
   {
     id: "alerts",

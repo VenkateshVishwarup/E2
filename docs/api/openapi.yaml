@@ -2257,6 +2257,23 @@ components:
           description: Used for both arms, which is what makes the comparison paired.
           default: 1
           example: 1
+        repeats:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 1
+          description: |
+            Runs BOTH arms this many times over the same personas, and adds `variance`
+            to the response.
+
+            One run each is one draw from each version's distribution. For a version
+            that may not take the same path twice, judging two of those against each
+            other on a single draw apiece is how a difference that is really noise gets
+            shipped.
+
+            Every repeat runs both arms, so `n × repeats × 2` is capped at the cohort
+            limit — the bill is twice a plain simulation's for the same numbers.
+          example: 3
       example:
         journey: mba-admissions-qualification
         a: 4
@@ -2670,6 +2687,52 @@ components:
         quality:
           $ref: "#/components/schemas/RunQuality"
 
+    RangeComparison:
+      type: object
+      description: |
+        The same comparison made on ranges instead of on one run each.
+
+        Deliberately conservative: a verdict other than `inconclusive` means the WORSE
+        run of the winner still beat the BEST run of the loser. That is a strong claim
+        from a handful of repeats, and a weaker one would not be worth making. This is a
+        range over repeats, not a confidence interval, and it is named accordingly.
+      required: [repeats, a, b, verdict, agreesWithSingleRun, identical]
+      additionalProperties: false
+      properties:
+        repeats:
+          type: integer
+          minimum: 1
+          example: 3
+        a:
+          $ref: "#/components/schemas/MetricRange"
+        b:
+          $ref: "#/components/schemas/MetricRange"
+        verdict:
+          type: string
+          enum: [b_better, a_better, inconclusive]
+          example: inconclusive
+        agreesWithSingleRun:
+          type: boolean
+          description: |
+            Whether the headline verdict — taken from the first run of each arm —
+            survived repetition. `false` is the interesting case and the reason this
+            exists: one run picked a winner that the ranges say was a draw.
+          example: false
+        identical:
+          type: boolean
+          description: |
+            Both arms produced the same figures on every repeat, so there is no range to
+            compare and the single-run verdict stands unchallenged. True whenever nothing
+            in the loop can vary.
+          example: false
+      example:
+        repeats: 3
+        a: { min: 0.2, max: 0.4, mean: 0.3 }
+        b: { min: 0.25, max: 0.45, mean: 0.35 }
+        verdict: inconclusive
+        agreesWithSingleRun: false
+        identical: false
+
     Scoreboard:
       type: object
       required:
@@ -2702,7 +2765,25 @@ components:
           description: |
             `inconclusive` whenever the interval spans zero. That is a result — the data
             does not support a decision — not an error.
+
+            Taken from the FIRST run of each arm. When `repeats` was greater than one,
+            `variance.qualified` says whether it survived repetition.
           example: b_better
+        variance:
+          type: object
+          description: |
+            Present only when `repeats` was greater than one. The headline figures above
+            stay the first run of each arm, so a client that ignores this reads exactly
+            what it did before.
+          required: [a, b, qualified]
+          additionalProperties: false
+          properties:
+            a:
+              $ref: "#/components/schemas/VarianceReport"
+            b:
+              $ref: "#/components/schemas/VarianceReport"
+            qualified:
+              $ref: "#/components/schemas/RangeComparison"
 
     Totals:
       type: object
@@ -2796,6 +2877,7 @@ components:
               description: The next level down. Empty at the version level.
               items:
                 $ref: "#/components/schemas/AttributionNode"
+
       example:
         dimension: campaign
         value: meta_scholarships

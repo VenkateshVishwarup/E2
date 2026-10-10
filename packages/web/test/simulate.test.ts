@@ -151,3 +151,47 @@ describe("simulate routes", () => {
     expect(res.statusCode).toBe(404);
   });
 });
+
+describe("compare — range against range", () => {
+  /** A server whose simulate service is the one the test wants to watch. */
+  const serverWith = (simulate: Record<string, unknown>) =>
+    buildServer(deps({
+      registry: new JourneyRegistry(pool, "t1"),
+      simulate: { run: vi.fn(), ...simulate },
+    }) as never);
+
+  it("passes repeats through to the service", async () => {
+    const compare = vi.fn().mockResolvedValue({ verdict: "inconclusive" });
+    const app = serverWith({ compare });
+    await app.inject({
+      method: "POST", url: "/api/compare",
+      payload: { journey: "j", a: 4, b: 5, n: 10, seed: 2, repeats: 3 },
+    });
+    expect(compare).toHaveBeenCalledWith("j", 4, 5, 10, 2, 3);
+  });
+
+  it("defaults to one run each, as it always did", async () => {
+    const compare = vi.fn().mockResolvedValue({ verdict: "inconclusive" });
+    await serverWith({ compare }).inject({
+      method: "POST", url: "/api/compare", payload: { journey: "j", a: 4, b: 5, n: 10 },
+    });
+    expect(compare).toHaveBeenCalledWith("j", 4, 5, 10, undefined, 1);
+  });
+
+  it("refuses more repeats than the limit advertises", async () => {
+    const res = await serverWith({ compare: vi.fn() }).inject({
+      method: "POST", url: "/api/compare", payload: { journey: "j", a: 4, b: 5, n: 10, repeats: 9 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/repeats must be an integer between 1 and 5/);
+  });
+
+  it("counts both arms against the cohort cap, because both are billed", async () => {
+    const res = await serverWith({ compare: vi.fn() }).inject({
+      method: "POST", url: "/api/compare",
+      payload: { journey: "j", a: 4, b: 5, n: 2000, repeats: 2 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/n × repeats × 2 arms/);
+  });
+});

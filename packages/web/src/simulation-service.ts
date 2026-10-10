@@ -8,7 +8,9 @@ import { SimulationRunner, type RunSummary } from "@midfunnel/batch/simulate/run
 import { scoreConversation, type Scorecard } from "@midfunnel/batch/eval/scorecard";
 import { aggregate, evaluateAlerts } from "@midfunnel/batch/eval/alerts";
 import { varianceAcross, type RepeatRun } from "@midfunnel/batch/eval/variance";
-import { compareRuns, type ArmResult, type Scoreboard } from "@midfunnel/batch/experiment/compare";
+import {
+  compareRanges, compareRuns, type ArmResult, type Scoreboard,
+} from "@midfunnel/batch/experiment/compare";
 import type { SimulationResult, SimulationService } from "./deps.js";
 
 /**
@@ -50,19 +52,50 @@ export class LiveSimulationService implements SimulationService {
     };
   }
 
+  /**
+   * `repeats` runs BOTH arms that many times over the same personas.
+   *
+   * One run each is one draw from each version's distribution, and for a version
+   * that may not take the same path twice that is how a difference which is
+   * really noise gets shipped. The headline stays the first run against the
+   * first run, so a client that ignores `variance` reads exactly what it did
+   * before; `variance.qualified` then says whether that verdict survived.
+   */
   async compare(
-    journey: string, va: number, vb: number, n: number, seed = 1,
+    journey: string, va: number, vb: number, n: number, seed = 1, repeats = 1,
   ): Promise<Scoreboard> {
-    // Same seed both sides: the identical personas meet both versions, which is
-    // what makes the paired bootstrap in compareRuns valid.
-    const a = await this.execute(journey, va, n, seed);
-    const b = await this.execute(journey, vb, n, seed);
-
     const arm = (r: { summary: RunSummary; cards: Scorecard[] }, v: number): ArmResult => ({
       target: `${journey}@${v}`, summary: r.summary, quality: aggregate(r.cards),
     });
 
-    return compareRuns(arm(a, va), arm(b, vb), a.cards, b.cards);
+    // Same seed both sides and on every repeat: the identical personas meet both
+    // versions, which is what makes the paired bootstrap in compareRuns valid
+    // and what isolates the model's variance from the cohort's.
+    const runsA: RepeatRun[] = [];
+    const runsB: RepeatRun[] = [];
+    let firstA: { summary: RunSummary; cards: Scorecard[] } | undefined;
+    let firstB: { summary: RunSummary; cards: Scorecard[] } | undefined;
+
+    for (let i = 0; i < repeats; i++) {
+      const a = await this.execute(journey, va, n, seed, i);
+      const b = await this.execute(journey, vb, n, seed, i);
+      firstA ??= a;
+      firstB ??= b;
+      for (const [runs, r] of [[runsA, a], [runsB, b]] as const) {
+        const quality = aggregate(r.cards);
+        runs.push({ runId: r.summary.runId, quality, alerts: evaluateAlerts(quality) });
+      }
+    }
+
+    const board = compareRuns(arm(firstA!, va), arm(firstB!, vb), firstA!.cards, firstB!.cards);
+    if (repeats < 2) return board;
+
+    const varianceA = varianceAcross(runsA);
+    const varianceB = varianceAcross(runsB);
+    const qualified = compareRanges(varianceA, varianceB, board.verdict);
+    return qualified
+      ? { ...board, variance: { a: varianceA, b: varianceB, qualified } }
+      : board;
   }
 
   private async execute(journey: string, version: number, n: number, seed: number, repeat = 0) {
