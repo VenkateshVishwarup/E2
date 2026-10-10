@@ -19,12 +19,19 @@ export interface RoadmapItem {
 export const ROADMAP: RoadmapItem[] = [
   {
     id: "channels",
-    title: "WhatsApp and voice",
-    will: "Run the same journeys over WhatsApp and voice, not just the web chat here. " +
-          "The agent does not change — only what carries the message.",
-    today: "The runtime never sees the channel: it returns intents and the caller delivers " +
-           "them. Every message event already records its channel, and consent scope is " +
-           "captured at ingestion so a channel a lead did not consent to is unreachable.",
+    title: "A vendor on the end of WhatsApp and voice",
+    will: "Ship adapters for a real messaging and telephony vendor — their payload shape, " +
+          "their webhook signature, delivery receipts and media — rather than one generic " +
+          "send-and-receive shape.",
+    today: "The same journey already runs over web chat, WhatsApp and voice: the runtime " +
+           "never sees the channel, and what changes at the edge is the wording and the " +
+           "delivery. A spoken message has its bracketed option lists reworded into lists " +
+           "a person can say. An inbound message is addressed by phone number and finds " +
+           "its conversation through the log, so a reply can be handled by a different " +
+           "process from the one that asked. Consent is an allow-list checked at the last " +
+           "point before a message leaves, and a refusal is recorded as a policy event. " +
+           "Point CHANNEL_WHATSAPP_URL at a vendor and it is delivered for real; " +
+           "unconnected, it is recorded and the screen says so.",
     horizon: "next",
   },
   {

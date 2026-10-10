@@ -8,6 +8,7 @@ import type { Scoreboard } from "@midfunnel/batch/experiment/compare";
 import type { AttributionEngine } from "@midfunnel/intelligence/attribution/engine";
 import type { InsightEngine } from "@midfunnel/intelligence/insights/engine";
 import type { Answer } from "@midfunnel/intelligence/copilot/types";
+import type { Channel } from "@midfunnel/core/channels";
 import type { ChatReply, ChatState, StartSession } from "./chat-service.js";
 
 export interface SimulationResult {
@@ -34,6 +35,8 @@ export interface ChatSessions {
   start(opts: StartSession): Promise<ChatReply>;
   send(leadId: string, text: string): Promise<ChatReply>;
   state(leadId: string): Promise<ChatState>;
+  /** The conversation already running at an address, for an inbound message. */
+  findByAddress(channel: Channel, address: string): Promise<string | null>;
 }
 
 export interface ServerDeps {

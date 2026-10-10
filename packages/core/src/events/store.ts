@@ -130,6 +130,27 @@ export class EventStore {
     return rows.map(toStored);
   }
 
+  /**
+   * The lead reached on a channel address, if there is one.
+   *
+   * An inbound WhatsApp message arrives from a phone number, not a session id,
+   * so a reply has to find the conversation it belongs to. Containment (`@>`)
+   * rather than `->>` equality, because that is what the GIN index on `payload`
+   * can actually serve.
+   *
+   * Newest wins: a number reused by a different person months later should
+   * continue the conversation they are having, not the one someone else left.
+   */
+  async findLeadByAddress(channel: string, address: string): Promise<string | null> {
+    const { rows } = await this.pool.query<{ lead_id: string }>(
+      `SELECT lead_id FROM events
+       WHERE tenant_id = $1 AND env = $2 AND type = 'LeadIngested' AND payload @> $3::jsonb
+       ORDER BY occurred_at DESC, id DESC LIMIT 1`,
+      [this.tenantId, this.env, JSON.stringify({ channel, address })],
+    );
+    return rows[0]?.lead_id ?? null;
+  }
+
   /** Reconstruct everything known about a lead. This is the only read model. */
   async fold(leadId: string): Promise<LeadState> {
     return foldEvents(leadId, await this.query({ leadId }));

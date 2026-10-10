@@ -46,13 +46,18 @@ const STUB = {
   attribution: { roll: vi.fn() } as never,
   insights: { insights: vi.fn() } as never,
   copilot: { ask: vi.fn() },
-  chat: { start: vi.fn(), send: vi.fn(), state: vi.fn() },
+  chat: { start: vi.fn(), send: vi.fn(), state: vi.fn(), findByAddress: vi.fn() },
   offline: true,
 };
 
 let pool: Pool;
 let app: ReturnType<typeof buildServer>;
 let copilotAsk: ReturnType<typeof vi.fn>;
+/** The chat the server is actually built with, so a test can drive it. */
+let chat: {
+  start: ReturnType<typeof vi.fn>; send: ReturnType<typeof vi.fn>;
+  state: ReturnType<typeof vi.fn>; findByAddress: ReturnType<typeof vi.fn>;
+};
 
 beforeAll(async () => { pool = createPool(URL); await migrate(pool); });
 beforeEach(async () => {
@@ -61,6 +66,7 @@ beforeEach(async () => {
   await registry.publish(V3);
   await registry.publish(V4);
   copilotAsk = vi.fn().mockResolvedValue(ANSWER);
+  chat = { start: vi.fn(), send: vi.fn(), state: vi.fn(), findByAddress: vi.fn() };
   app = buildServer({
     registry,
     store: new EventStore(pool, "t1"),
@@ -69,7 +75,7 @@ beforeEach(async () => {
     attribution: { roll: vi.fn().mockResolvedValue(ROI) } as never,
     insights: { insights: vi.fn().mockResolvedValue({ journey: "j", leadsAnalysed: 30, findings: [], skipped: [] }) } as never,
     copilot: { ask: copilotAsk },
-    chat: { start: vi.fn(), send: vi.fn(), state: vi.fn() },
+    chat,
   offline: true,
   });
 });
@@ -213,7 +219,7 @@ describe("intelligence routes", () => {
       attribution: { roll: vi.fn().mockRejectedValue(new Error("journey not found: nope")) } as never,
       insights: { insights: vi.fn().mockRejectedValue(new Error("connection refused")) } as never,
       copilot: { ask: vi.fn() },
-  chat: { start: vi.fn(), send: vi.fn(), state: vi.fn() },
+  chat: { start: vi.fn(), send: vi.fn(), state: vi.fn(), findByAddress: vi.fn() },
   offline: true,
     });
     expect((await failing.inject({ url: "/api/journeys/nope/roi" })).statusCode).toBe(404);
@@ -304,5 +310,87 @@ describe("cohort sampling", () => {
       payload: { journey: "mba-admissions-qualification", a: 3, b: 4, n: 10 },
     });
     expect(seen[1]).toEqual(ids);
+  });
+});
+
+describe("channels", () => {
+  it("reports what each channel can do in this deployment", async () => {
+    const res = await app.inject({ url: "/api/channels" });
+    expect(res.statusCode).toBe(200);
+    const channels = res.json().channels as Array<Record<string, unknown>>;
+    expect(channels.map((c) => c.channel)).toEqual(["web", "whatsapp", "voice"]);
+    expect(channels.find((c) => c.channel === "voice")).toMatchObject({
+      spoken: true, configured: false,
+    });
+    // Unconfigured, it names the variable that would make it real.
+    expect(String(channels.find((c) => c.channel === "whatsapp")!.reason))
+      .toContain("CHANNEL_WHATSAPP_URL");
+  });
+
+  it("refuses an inbound message on a channel that is not one", async () => {
+    const res = await app.inject({
+      method: "POST", url: "/api/channels/telepathy/inbound",
+      payload: { from: "+911234567890", text: "hi" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("refuses an inbound message on web, which has no address", async () => {
+    const res = await app.inject({
+      method: "POST", url: "/api/channels/web/inbound",
+      payload: { from: "+911234567890", text: "hi" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("requires a sender and a message", async () => {
+    for (const payload of [{ text: "hi" }, { from: "+91123" }, { from: "+91123", text: "  " }]) {
+      const res = await app.inject({
+        method: "POST", url: "/api/channels/whatsapp/inbound", payload,
+      });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it("needs a journey to open a conversation with an address it has not seen", async () => {
+    chat.findByAddress.mockResolvedValue(null);
+    const res = await app.inject({
+      method: "POST", url: "/api/channels/whatsapp/inbound",
+      payload: { from: "+911234567890", text: "hi" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/journey .* is required/);
+  });
+
+  it("opens a conversation for a new address and delivers what they said into it", async () => {
+    // Nothing the lead said is dropped on the way in: the disclosure goes out,
+    // and their own first message is then the first thing the agent answers.
+    chat.findByAddress.mockResolvedValue(null);
+    chat.start.mockResolvedValue({ reply: "Hi", state: { leadId: "web_new" } });
+    chat.send.mockResolvedValue({ reply: "Which programme?", state: { leadId: "web_new" } });
+
+    const res = await app.inject({
+      method: "POST", url: "/api/channels/whatsapp/inbound",
+      payload: { from: "+911234567890", text: "tell me about the MBA", journey: "mba-admissions-qualification" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(chat.start).toHaveBeenCalledWith(expect.objectContaining({
+      journey: "mba-admissions-qualification", channel: "whatsapp", address: "+911234567890",
+      consentChannels: ["whatsapp"],
+    }));
+    expect(chat.send).toHaveBeenCalledWith("web_new", "tell me about the MBA");
+    expect(res.json().reply).toBe("Which programme?");
+  });
+
+  it("continues the conversation an address is already having", async () => {
+    chat.findByAddress.mockResolvedValue("web_existing");
+    chat.send.mockResolvedValue({ reply: "Noted.", state: { leadId: "web_existing" } });
+    const res = await app.inject({
+      method: "POST", url: "/api/channels/whatsapp/inbound",
+      payload: { from: "+911234567890", text: "next intake" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(chat.start).not.toHaveBeenCalled();
+    expect(chat.send).toHaveBeenCalledWith("web_existing", "next intake");
   });
 });

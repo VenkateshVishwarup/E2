@@ -6,6 +6,13 @@ interface EvidenceView {
   field: string; required: boolean; value: unknown;
   confidence: number | null; sensitive: boolean;
 }
+type Channel = "web" | "whatsapp" | "voice";
+interface ChannelStatus {
+  channel: Channel; label: string; configured: boolean;
+  endpoint: string | null; reason: string | null;
+  maxLength: number | null; spoken: boolean;
+}
+interface DeliveryResult { status: string; detail: string | null }
 interface MoveView {
   move: string; proposed: string; overridden: boolean;
   rule: string | null; rationale: string; at: string;
@@ -19,6 +26,8 @@ interface ChatState {
   metrics: Record<string, boolean | number>;
   completed: boolean; escalated: boolean; escalationRule: string | null;
   moves: MoveView[];
+  channel: Channel;
+  delivery: DeliveryResult;
   endedReason: "routed" | "escalated" | "turn_budget" | null;
   modelCost: number; currency: string; offline: boolean;
 }
@@ -26,8 +35,17 @@ interface ChatReply { reply: string | null; state: ChatState }
 
 const SPLIT = "ab";
 
+/** What changes when the message is carried by something other than a browser. */
+const CHANNEL_NOTE: Record<Exclude<Channel, "web">, string> = {
+  whatsapp: "On WhatsApp the agent is the same and the message is capped in length.",
+  voice: "Spoken, so the agent's bracketed option lists become lists a person can say — " +
+         "a speech engine reads a bracket aloud.",
+};
+
 export function ChatTab({ journey }: { journey: string }) {
   const [versions, setVersions] = useState<number[]>([]);
+  const [channel, setChannel] = useState<Channel>("web");
+  const [channels, setChannels] = useState<ChannelStatus[] | null>(null);
   const [strategies, setStrategies] = useState<Record<number, "scripted" | "open">>({});
   const [live, setLive] = useState<number | null>(null);
   const [choice, setChoice] = useState<string>("");
@@ -51,6 +69,8 @@ export function ChatTab({ journey }: { journey: string }) {
       const liveVersion = l.ok ? ((await l.json()).version as number) : null;
       setVersions(list);
       setStrategies(body.strategies ?? {});
+      const c = await fetch("/api/channels");
+      if (c.ok) setChannels((await c.json()).channels as ChannelStatus[]);
       setLive(liveVersion);
       // Default to what real leads meet, not to the newest thing published.
       setChoice(String(liveVersion ?? list[0] ?? ""));
@@ -77,9 +97,11 @@ export function ChatTab({ journey }: { journey: string }) {
     setState(null);
     // An A/B split assigns deterministically per session, which is how a new
     // version takes real traffic without disturbing the one already running.
+    // No address: the console carries the conversation itself, so a channel
+    // here changes the wording and records the intent without messaging anyone.
     void call("/api/chat/sessions", choice === SPLIT
-      ? { journey, split: { [String(live)]: 50, [String(candidate)]: 50 } }
-      : { journey, version: Number(choice) });
+      ? { journey, channel, split: { [String(live)]: 50, [String(candidate)]: 50 } }
+      : { journey, channel, version: Number(choice) });
   };
 
   const send = () => {
@@ -120,18 +142,32 @@ export function ChatTab({ journey }: { journey: string }) {
             <option value={SPLIT}>A/B — v{live} (live) vs v{candidate}</option>
           )}
         </select>
-        {/* The runtime never sees the channel — it returns intents and the
-            caller delivers them — so these are a delivery gap, not a rebuild. */}
-        <select className="ask-input" style={{ maxWidth: 190 }} value="web" disabled
-                title={item("channels").will} aria-label="Channel">
-          <option value="web">Web chat</option>
-          <option>WhatsApp — soon</option>
-          <option>Voice — soon</option>
+        {/* The runtime never sees the channel: it returns intents and the
+            caller delivers them. So picking one here changes the wording and
+            the delivery, and nothing about the agent. */}
+        <select className="ask-input" style={{ maxWidth: 190 }} value={channel}
+                disabled={busy || !!state} aria-label="Channel"
+                onChange={(e) => setChannel(e.target.value as Channel)}>
+          {(channels ?? [{ channel: "web", label: "Web chat", configured: true }]).map((c) => (
+            <option key={c.channel} value={c.channel}>
+              {c.label}{c.channel !== "web" && !c.configured ? " — not connected" : ""}
+            </option>
+          ))}
         </select>
         <button className="btn" disabled={busy || !choice} onClick={start}>
           {state ? "Start another" : "Start chat"}
         </button>
       </div>
+
+      {channel !== "web" && (
+        <p className="muted provenance">
+          {CHANNEL_NOTE[channel]}{" "}
+          {channels?.find((c) => c.channel === channel)?.configured
+            ? "A conversation started from a real address on this channel is delivered for real."
+            : "Nothing is delivered from here: the console has no address to send to, and " +
+              "this deployment has no transport configured for it either."}
+        </p>
+      )}
 
       {error && <p className="err">Chat failed: {error}</p>}
 

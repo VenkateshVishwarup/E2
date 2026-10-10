@@ -10,7 +10,10 @@ import { AgentRuntime } from "@midfunnel/runtime/step";
 import { KeywordExtractor } from "@midfunnel/runtime/keyword-extractor";
 import { offlineClient } from "@midfunnel/runtime/offline-client";
 import { parseSpec } from "@midfunnel/core/journey/spec";
+import { mockBindings } from "@midfunnel/runtime/broker";
+import type { Channel } from "@midfunnel/core/channels";
 import { ChatService } from "../src/chat-service.js";
+import type { Transport } from "../src/channel-delivery.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const V4 = readFileSync(join(HERE, "../../core/test/fixtures/mba-v4.yaml"), "utf8");
@@ -255,5 +258,148 @@ describe("ChatService — how a conversation ends", () => {
     const { state: end } = await chat.send(state.leadId, "put me through to a human");
     expect(end.endedReason).toBe("escalated");
     expect(end.escalationRule).toBe("asks_for_human");
+  });
+});
+
+describe("ChatService — channels", () => {
+  /** A transport that records instead of calling a vendor. */
+  const recorder = () => {
+    const sent: Array<{ to: string; text: string }> = [];
+    let fail: string | null = null;
+    return {
+      sent,
+      breaks: (why: string) => { fail = why; },
+      factory: (channel: Channel) => channel === "web" ? null : {
+        async send(to: string, text: string) {
+          if (fail) throw new Error(fail);
+          sent.push({ to, text });
+        },
+      },
+    };
+  };
+
+  const serviceWith = (transports: (c: Channel) => Transport | null) =>
+    new ChatService(store, registry, new AgentRuntime(new KeywordExtractor() as never,
+      offlineClient()), FX, true, mockBindings, transports);
+
+  it("defaults to web, and web needs no transport", async () => {
+    const t = recorder();
+    const { state } = await serviceWith(t.factory).start({ journey: JOURNEY, version: 4 });
+    expect(state.channel).toBe("web");
+    expect(state.delivery.status).toBe("not_applicable");
+    expect(t.sent).toEqual([]);
+  });
+
+  it("speaks the options on a voice call rather than reading the brackets", async () => {
+    // The agent does not change per channel. Only what carries the message does.
+    const t = recorder();
+    const chat = serviceWith(t.factory);
+    const { state } = await chat.start({
+      journey: JOURNEY, version: 4, channel: "voice", address: "+911234567890",
+    });
+    const { reply } = await chat.send(state.leadId, "the online MBA");
+    expect(reply).toMatch(/ — this intake, next intake or just exploring$/);
+    expect(reply).not.toContain("(");
+  });
+
+  it("records what the lead actually received, not what the runtime drafted", async () => {
+    const t = recorder();
+    const chat = serviceWith(t.factory);
+    const { state } = await chat.start({
+      journey: JOURNEY, version: 4, channel: "voice", address: "+911234567890",
+    });
+    await chat.send(state.leadId, "the online MBA");
+    const sent = (await store.query({ leadId: state.leadId, type: "MessageSent" })).at(-1)!;
+    expect(sent.payload.renderedText).not.toContain("(");
+    expect(sent.payload.channel).toBe("voice");
+  });
+
+  it("delivers to the address through the channel's transport", async () => {
+    const t = recorder();
+    const chat = serviceWith(t.factory);
+    const { state } = await chat.start({
+      journey: JOURNEY, version: 4, channel: "whatsapp", address: "+911234567890",
+    });
+    expect(state.delivery.status).toBe("sent");
+    expect(t.sent).toEqual([{ to: "+911234567890", text: expect.stringContaining("AI assistant") }]);
+  });
+
+  it("refuses a channel the lead did not consent to, and records the rule", async () => {
+    // "We did not contact this lead, and here is the rule that stopped us" is
+    // what a regulator asks for, and an unlogged return cannot produce it.
+    const t = recorder();
+    const { state } = await serviceWith(t.factory).start({
+      journey: JOURNEY, version: 4, channel: "whatsapp",
+      address: "+911234567890", consentChannels: ["web"],
+    });
+    expect(state.delivery).toEqual({
+      status: "refused", detail: "this lead did not consent to whatsapp",
+    });
+    expect(t.sent).toEqual([]);
+    const blocked = await store.query({ leadId: state.leadId, type: "PolicyEvaluated" });
+    expect(blocked.at(-1)!.payload).toMatchObject({
+      ruleId: "channel_not_consented", verdict: "block", channel: "whatsapp",
+    });
+  });
+
+  it("consents to the channel the lead arrived on, and to no other", async () => {
+    const t = recorder();
+    const { state } = await serviceWith(t.factory).start({
+      journey: JOURNEY, version: 4, channel: "whatsapp", address: "+911234567890",
+    });
+    const [ingested] = await store.query({ leadId: state.leadId, type: "LeadIngested" });
+    expect(ingested!.payload.consentChannels).toEqual(["whatsapp"]);
+  });
+
+  it("records rather than sends when no transport is configured", async () => {
+    const { state } = await serviceWith(() => null).start({
+      journey: JOURNEY, version: 4, channel: "whatsapp", address: "+911234567890",
+    });
+    expect(state.delivery.status).toBe("recorded");
+    expect(state.delivery.detail).toMatch(/no transport configured/);
+  });
+
+  it("holds the conversation in the console when there is no address", async () => {
+    const t = recorder();
+    const { state } = await serviceWith(t.factory)
+      .start({ journey: JOURNEY, version: 4, channel: "voice" });
+    expect(state.delivery.status).toBe("not_applicable");
+    expect(t.sent).toEqual([]);
+  });
+
+  it("keeps the conversation when delivery fails", async () => {
+    // The message is on the record either way, so a retry has something to send.
+    const t = recorder();
+    t.breaks("vendor returned 503");
+    const chat = serviceWith(t.factory);
+    const { state } = await chat.start({
+      journey: JOURNEY, version: 4, channel: "whatsapp", address: "+911234567890",
+    });
+    expect(state.delivery).toEqual({ status: "refused", detail: "vendor returned 503" });
+    expect(state.turns).toHaveLength(1);
+  });
+
+  it("finds the conversation running at an address, so a reply continues it", async () => {
+    const t = recorder();
+    const chat = serviceWith(t.factory);
+    const { state } = await chat.start({
+      journey: JOURNEY, version: 4, channel: "whatsapp", address: "+919999900000",
+    });
+    expect(await chat.findByAddress("whatsapp", "+919999900000")).toBe(state.leadId);
+    expect(await chat.findByAddress("voice", "+919999900000")).toBeNull();
+    expect(await chat.findByAddress("whatsapp", "+910000000000")).toBeNull();
+  });
+
+  it("keeps the channel across turns, from the log rather than from memory", async () => {
+    // A WhatsApp reply can reach a different process from the one that asked.
+    const t = recorder();
+    const chat = serviceWith(t.factory);
+    const { state } = await chat.start({
+      journey: JOURNEY, version: 4, channel: "whatsapp", address: "+911234567890",
+    });
+    const after = await chat.send(state.leadId, "the online MBA");
+    expect(after.state.channel).toBe("whatsapp");
+    const received = (await store.query({ leadId: state.leadId, type: "MessageReceived" })).at(-1)!;
+    expect(received.payload.channel).toBe("whatsapp");
   });
 });

@@ -725,6 +725,86 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/channels:
+    get:
+      operationId: listChannels
+      tags: [Chat]
+      summary: What each channel can do in this deployment
+      description: |
+        The agent does not change per channel — it returns intents and the caller
+        delivers them. Two things do change: how a sentence is worded for the medium,
+        and whether anything can actually carry it.
+
+        Delivery is configured like a journey's tool bindings: `CHANNEL_WHATSAPP_URL`
+        and `CHANNEL_WHATSAPP_TOKEN`. Unconfigured, messages on that channel are
+        recorded and not sent, and `reason` names the variable that would change that.
+      responses:
+        "200":
+          description: One row per channel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/channels/{channel}/inbound:
+    post:
+      operationId: receiveInboundMessage
+      tags: [Chat]
+      summary: A message arriving from a lead on a channel
+      description: |
+        Addressed by phone number rather than session id, because that is all an
+        inbound WhatsApp message carries. A known address continues the conversation it
+        belongs to, found through the event log — the reply may be handled by a
+        different process from the one that asked the question. An unknown address
+        opens a conversation, which needs `journey`.
+
+        An inbound message is consent to reply **on that channel and no other**: a lead
+        who messaged on WhatsApp has not agreed to be telephoned.
+
+        The lead's own message is delivered into the conversation after it opens, so
+        nothing they said is dropped on the way in.
+
+        This endpoint sits behind the same API token as everything else. A production
+        deployment behind a vendor's webhook would also verify that vendor's signature;
+        that is not implemented.
+      parameters:
+        - name: channel
+          in: path
+          required: true
+          description: The channel the message arrived on. `web` is not valid — it has
+            no address.
+          schema:
+            type: string
+            enum: [whatsapp, voice]
+            example: whatsapp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InboundMessage"
+      responses:
+        "200":
+          description: The agent's reply, and the state of the conversation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatReply"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/chat/sessions:
     post:
       operationId: startChatSession
@@ -1526,6 +1606,95 @@ components:
         modelCost: 214
         currency: INR
         offline: false
+
+    ChannelStatus:
+      type: object
+      required: [channel, label, configured, endpoint, reason, maxLength, spoken]
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+          enum: [web, whatsapp, voice]
+          example: voice
+        label:
+          type: string
+          example: Voice
+        configured:
+          type: boolean
+          description: Whether a message on this channel would actually leave the process.
+            Always true for `web`, whose reply is the HTTP response itself.
+          example: false
+        endpoint:
+          type: string
+          nullable: true
+          description: Host only, never a path or a token.
+          example: messaging.vendor.example
+        reason:
+          type: string
+          nullable: true
+          description: What would make it real, when it is not.
+          example: CHANNEL_VOICE_URL is not set, so messages are recorded and not sent
+        maxLength:
+          type: integer
+          nullable: true
+          description: Longest single message the medium takes. Null for no practical limit.
+          example: 350
+        spoken:
+          type: boolean
+          description: |
+            True when the message is read aloud. Bracketed option lists are reworded
+            into lists a person can say, because a speech engine reads the bracket.
+          example: true
+      example:
+        channel: voice
+        label: Voice
+        configured: false
+        endpoint: null
+        reason: CHANNEL_VOICE_URL is not set, so messages are recorded and not sent
+        maxLength: 350
+        spoken: true
+
+    ChannelList:
+      type: object
+      required: [channels]
+      additionalProperties: false
+      properties:
+        channels:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChannelStatus"
+      example:
+        channels:
+          - { channel: web, label: Web chat, configured: true, endpoint: null,
+              reason: the reply is the response to the request that produced it,
+              maxLength: null, spoken: false }
+          - { channel: whatsapp, label: WhatsApp, configured: false, endpoint: null,
+              reason: CHANNEL_WHATSAPP_URL is not set, so messages are recorded and not sent,
+              maxLength: 1000, spoken: false }
+
+    InboundMessage:
+      type: object
+      required: [from, text]
+      additionalProperties: false
+      properties:
+        from:
+          type: string
+          minLength: 1
+          description: The lead's address on this channel.
+          example: "+919876543210"
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          example: tell me about the executive MBA
+        journey:
+          type: string
+          description: Required only when this address has no conversation yet.
+          example: mba-admissions-qualification
+      example:
+        from: "+919876543210"
+        text: tell me about the executive MBA
+        journey: mba-admissions-qualification
 
     ChatReply:
       type: object

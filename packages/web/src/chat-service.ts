@@ -6,6 +6,8 @@ import { isOpen, pinnedDefaults, renderPinned, requiredEvidenceFields } from "@m
 import { AgentRegistry } from "@midfunnel/core/agent/registry";
 import { ToolBroker, mockBindings, type Binding } from "@midfunnel/runtime/broker";
 import { bindingsFor, describeBindings } from "@midfunnel/runtime/bindings";
+import { consented, isChannel, renderForChannel, type Channel } from "@midfunnel/core/channels";
+import { transportFor, type DeliveryResult, type Transport } from "./channel-delivery.js";
 import type { EventInput, LeadState, StoredEvent } from "@midfunnel/core/events/types";
 import { evaluateAll } from "@midfunnel/core/metrics/predicate";
 import type { AgentRuntime } from "@midfunnel/runtime/step";
@@ -16,8 +18,29 @@ import { TrafficAllocator } from "@midfunnel/batch/experiment/allocator";
 /** Chat leads are prefixed so a seed script's cleanup can never delete them. */
 const PREFIX = "web_";
 
+/** The channel facts for one conversation, as the opening event recorded them. */
+interface Session {
+  channel: Channel;
+  address: string | null;
+  consentChannels: string[];
+}
+
 export interface StartSession {
   journey: string;
+  /** What will carry the conversation. Defaults to web. */
+  channel?: Channel;
+  /**
+   * Where to reach the lead on that channel — a phone number for WhatsApp or
+   * voice. Absent means nothing is delivered: the console holds the
+   * conversation itself, and the channel only decides the wording.
+   */
+  address?: string;
+  /**
+   * Channels this lead agreed to. An allow-list, and an empty one reaches
+   * nobody: consent is the one thing a channel rollout cannot fix with an
+   * apology, so absence is refusal rather than "not specified".
+   */
+  consentChannels?: string[];
   /** Explicit version, or omit and supply `split`. */
   version?: number;
   /** Live A/B: version -> percentage, summing to 100. */
@@ -52,6 +75,10 @@ export interface ChatState {
   leadId: string;
   journey: string;
   version: number;
+  /** What is carrying this conversation. */
+  channel: Channel;
+  /** What happened to the last message the agent sent. */
+  delivery: DeliveryResult;
   /** Which strategy this version runs, so the UI can explain what it is seeing. */
   strategy: "scripted" | "open";
   /**
@@ -120,6 +147,12 @@ export class ChatService {
      * front of both was never a mock, which is the half that matters.
      */
     private readonly mocks: Record<string, Binding> = mockBindings,
+    /**
+     * What carries a message on a channel that is not the web. Injected so a
+     * test can watch delivery without a vendor, and so an unconfigured channel
+     * is a null here rather than a special case at every call site.
+     */
+    private readonly transports: (channel: Channel) => Transport | null = transportFor,
   ) {}
 
   async start(opts: StartSession): Promise<ChatReply> {
@@ -127,15 +160,20 @@ export class ChatService {
     const spec = await this.registry.get(opts.journey, version);
     const leadId = `${PREFIX}${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const base = this.base(leadId, spec);
+    const channel = opts.channel ?? "web";
 
     await this.store.append({
       ...base, type: "LeadIngested",
       payload: {
-        source: opts.source ?? "web_chat",
+        source: opts.source ?? `${channel}_chat`,
         campaignId: opts.campaignId ?? "direct",
         creativeId: opts.creativeId ?? "console",
         consentScope: "marketing",
-        channel: "web",
+        channel,
+        ...(opts.address ? { address: opts.address } : {}),
+        // Defaulting to the channel they arrived on, and nothing else. A lead
+        // who filled in a web form did not agree to be telephoned.
+        consentChannels: opts.consentChannels ?? [channel],
         variables: opts.variables ?? {},
       },
     });
@@ -146,12 +184,17 @@ export class ChatService {
   }
 
   async send(leadId: string, text: string): Promise<ChatReply> {
-    const { spec, base } = await this.load(leadId);
+    const { spec, base, session } = await this.load(leadId);
     await this.store.append({
       ...base, type: "MessageReceived",
-      payload: { channel: "web", rawText: text },
+      payload: { channel: session.channel, rawText: text },
     });
     return this.advance(spec, base);
+  }
+
+  /** The conversation already running at an address on a channel, if any. */
+  async findByAddress(channel: Channel, address: string): Promise<string | null> {
+    return this.store.findLeadByAddress(channel, address);
   }
 
   async state(leadId: string): Promise<ChatState> {
@@ -162,6 +205,7 @@ export class ChatService {
   /** One runtime step, persisted, plus the metered cost of making it. */
   private async advance(spec: JourneySpec, base: EventBase): Promise<ChatReply> {
     const folded: LeadState = await this.store.fold(base.leadId);
+    const session = await this.session(base.leadId);
 
     this.runtime.meter.drain();          // cost of THIS turn only
     // Tools are reachable from a live conversation, so an open agent may offer to
@@ -171,12 +215,15 @@ export class ChatService {
     const actions = await this.runtime.step(spec, folded, {
       allowFollowUp: true, toolsAvailable: true,
     });
-    const applied = actionsToEvents(actions, base, "web");
+    const applied = actionsToEvents(actions, base, session.channel);
     // Pinned text is a template until here. The runtime cannot render it —
     // the values are per-conversation — so a lead would otherwise receive
-    // "Hi {{name}}" verbatim.
-    render(applied, await this.variables(spec, base.leadId));
+    // "Hi {{name}}" verbatim. The channel's own wording is applied in the same
+    // pass, so what the log records is what the lead actually got.
+    render(applied, await this.variables(spec, base.leadId), session.channel);
     if (applied.events.length > 0) await this.store.appendMany(applied.events);
+
+    const delivery = await this.deliver(base, session, applied.sentText);
 
     // After the message, and through the broker — which authorises, meters and
     // writes its own events. A denial is recorded as an AuthorizationDenied
@@ -190,7 +237,7 @@ export class ChatService {
       journeyVersion: base.journeyVersion, agentId: base.agentId,
     }, this.runtime.meter.drain(), this.fx);
 
-    return { reply: applied.sentText, state: await this.view(spec, base.leadId) };
+    return { reply: applied.sentText, state: await this.view(spec, base.leadId, delivery) };
   }
 
   /**
@@ -225,7 +272,82 @@ export class ChatService {
     }
   }
 
-  private async view(spec: JourneySpec, leadId: string): Promise<ChatState> {
+  /**
+   * The channel facts for a conversation, read from the event that opened it.
+   *
+   * Not held in memory: a WhatsApp reply can arrive at a different process from
+   * the one that sent the question, and the log is the only thing both can see.
+   */
+  private async session(leadId: string): Promise<Session> {
+    const [ingested] = await this.store.query({ leadId, type: "LeadIngested", limit: 1 });
+    const payload = ingested?.payload ?? {};
+    const channel = isChannel(payload.channel) ? payload.channel : "web";
+    return {
+      channel,
+      address: typeof payload.address === "string" ? payload.address : null,
+      consentChannels: Array.isArray(payload.consentChannels)
+        ? payload.consentChannels.map(String)
+        : [channel],
+    };
+  }
+
+  /**
+   * Hands the agent's message to whatever carries it.
+   *
+   * Consent is checked here rather than at the edge because this is the last
+   * point before a message leaves, and a refusal is recorded as a policy event:
+   * "we did not contact this lead, and here is the rule that stopped us" is
+   * exactly the thing a regulator asks for and the thing an unlogged `return`
+   * cannot produce.
+   */
+  private async deliver(
+    base: EventBase, session: Session, text: string | null,
+  ): Promise<DeliveryResult> {
+    // Web chat IS the response to the request that produced it, and a console
+    // session on another channel has nowhere to send to.
+    if (text === null) return { status: "not_applicable", detail: "nothing was sent this turn" };
+    if (session.channel === "web") {
+      return { status: "not_applicable", detail: "the reply is the response to this request" };
+    }
+    if (!session.address) {
+      return { status: "not_applicable", detail: "no address, so the console carries this conversation" };
+    }
+
+    if (!consented(session.consentChannels, session.channel)) {
+      await this.store.append({
+        ...base, type: "PolicyEvaluated",
+        payload: {
+          ruleId: "channel_not_consented", verdict: "block", severity: "high",
+          channel: session.channel,
+        },
+      });
+      return {
+        status: "refused",
+        detail: `this lead did not consent to ${session.channel}`,
+      };
+    }
+
+    const transport = this.transports(session.channel);
+    if (!transport) {
+      return {
+        status: "recorded",
+        detail: `no transport configured for ${session.channel}, so the message was logged and not sent`,
+      };
+    }
+    try {
+      await transport.send(session.address, text);
+      return { status: "sent", detail: null };
+    } catch (err) {
+      // A failed delivery must not lose the conversation: the message is on the
+      // record and can be retried by whatever owns retries.
+      return { status: "refused", detail: (err as Error).message };
+    }
+  }
+
+  private async view(
+    spec: JourneySpec, leadId: string,
+    delivery: DeliveryResult = { status: "not_applicable", detail: null },
+  ): Promise<ChatState> {
     const events = await this.store.query({ leadId });
     const folded = await this.store.fold(leadId);
     const required = new Set(requiredEvidenceFields(spec));
@@ -250,6 +372,8 @@ export class ChatService {
       leadId,
       journey: spec.journey,
       version: spec.version,
+      channel: (await this.session(leadId)).channel,
+      delivery,
       strategy: isOpen(spec) ? "open" : "scripted",
       turns: folded.turns.map((t, i) => ({
         role: t.role, text: t.text, at: t.at.toISOString(),
@@ -291,12 +415,14 @@ export class ChatService {
     return { name: "there", ...pinnedDefaults(spec), ...supplied };
   }
 
-  private async load(leadId: string): Promise<{ spec: JourneySpec; base: EventBase }> {
+  private async load(
+    leadId: string,
+  ): Promise<{ spec: JourneySpec; base: EventBase; session: Session }> {
     if (!leadId.startsWith(PREFIX)) throw new Error(`not a chat session: ${leadId}`);
     const [first] = await this.store.query({ leadId, limit: 1 });
     if (!first) throw new Error(`chat session not found: ${leadId}`);
     const spec = await this.registry.get(first.journey, first.journeyVersion);
-    return { spec, base: this.base(leadId, spec) };
+    return { spec, base: this.base(leadId, spec), session: await this.session(leadId) };
   }
 
   private base(leadId: string, spec: JourneySpec): EventBase {
@@ -373,16 +499,21 @@ function pairMovesToTurns(events: readonly StoredEvent[]): Map<number, MoveView>
  * greeting, so the substitution never leaves them in.
  */
 function render(applied: { events: EventInput[]; sentText: string | null },
-                values: Record<string, string>): void {
+                values: Record<string, string>, channel: Channel): void {
   for (const event of applied.events) {
     if (event.type !== "MessageSent") continue;
     const raw = String(event.payload.renderedText ?? "");
     const { text, unresolved } = renderPinned(raw, values);
+    // Then the medium. A parenthetical list of options reads fine and is
+    // unusable spoken, so voice gets it as a spoken list — and the log records
+    // what the lead actually received, not what the runtime drafted.
+    const forChannel = renderForChannel(text, channel);
     event.payload = {
       ...event.payload,
-      renderedText: text,
+      renderedText: forChannel.text,
+      ...(forChannel.truncated ? { truncated: true, draftLength: text.length } : {}),
       ...(unresolved.length > 0 ? { unresolvedVariables: unresolved } : {}),
     };
-    if (applied.sentText === raw) applied.sentText = text;
+    if (applied.sentText === raw) applied.sentText = forChannel.text;
   }
 }

@@ -36,22 +36,26 @@ export interface HttpBindingConfig {
   timeoutMs: number;
 }
 
-/** Env var names for a binding, so the naming lives in exactly one place. */
-export function envNames(binding: string) {
-  const key = binding.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+/**
+ * Env var names for an outbound destination, so the naming lives in exactly one
+ * place. `prefix` is BINDING for a journey's tools and CHANNEL for message
+ * delivery — the same shape of thing, configured the same way.
+ */
+export function envNames(name: string, prefix = "BINDING") {
+  const key = name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
   return {
-    url: `BINDING_${key}_URL`,
-    token: `BINDING_${key}_TOKEN`,
-    timeout: `BINDING_${key}_TIMEOUT`,
+    url: `${prefix}_${key}_URL`,
+    token: `${prefix}_${key}_TOKEN`,
+    timeout: `${prefix}_${key}_TIMEOUT`,
   };
 }
 
 const DEFAULT_TIMEOUT_MS = 8000;
 
 export function configFor(
-  binding: string, env: NodeJS.ProcessEnv = process.env,
+  binding: string, env: NodeJS.ProcessEnv = process.env, prefix = "BINDING",
 ): HttpBindingConfig | null {
-  const names = envNames(binding);
+  const names = envNames(binding, prefix);
   const url = env[names.url]?.trim();
   if (!url) return null;
   const timeout = Number(env[names.timeout]);
