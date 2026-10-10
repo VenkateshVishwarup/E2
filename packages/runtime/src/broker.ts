@@ -22,17 +22,34 @@ export const mockBindings: Record<string, Binding> = {
   "catalog.lookup_program": async (args) => ({ program: args.program ?? "executive_mba", feesBand: "5L_to_15L" }),
 };
 
-const BINDING_NAMES: Record<string, string> = {
+/**
+ * What a capability reaches when the journey has not said, or has not been
+ * configured. Only a fallback for the log line: the journey's own `tools:` block
+ * is the answer whenever there is one.
+ */
+const FALLBACK_NAMES: Record<string, string> = {
   "crm.upsert_lead": "mock-crm",
   "calendar.book_slot": "mock-calendar",
   "catalog.lookup_program": "mock-catalog",
 };
+
+/**
+ * What each capability reaches, as the journey declared it and as the
+ * deployment resolved it.
+ *
+ * Carried into the event, because "the agent booked a slot" and "the agent
+ * booked a slot against a mock" are different facts, and a log that cannot tell
+ * them apart is a log you cannot audit a real booking from.
+ */
+export interface BindingDescriptor { name: string; live: boolean }
 
 export class ToolBroker {
   constructor(
     private readonly registry: AgentRegistry,
     private readonly store: EventStore,
     private readonly bindings: Record<string, Binding>,
+    /** Keyed by capability. Absent entries fall back to the mock names. */
+    private readonly descriptors: Record<string, BindingDescriptor> = {},
   ) {}
 
   /**
@@ -72,14 +89,18 @@ export class ToolBroker {
       error = (err as Error).message;
     }
 
+    const descriptor = this.descriptors[capability];
     await this.store.append({
       ...base, type: "ToolInvoked",
       payload: {
         capability,
-        binding: BINDING_NAMES[capability] ?? "custom",
+        binding: descriptor?.name ?? FALLBACK_NAMES[capability] ?? "custom",
+        // Whether anything outside this process actually happened.
+        live: descriptor?.live ?? false,
         argsHash: hash(args),
         resultStatus: error ? "error" : "ok",
         latencyMs: Date.now() - startedAt,
+        ...(error ? { error: error.slice(0, 200) } : {}),
       },
     });
 

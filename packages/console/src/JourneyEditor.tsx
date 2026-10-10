@@ -5,6 +5,10 @@ import { readStrategy, switchStrategy, type StrategyKind } from "./strategy-yaml
 import { asNewJourney, journeyNameProblem } from "./journey-yaml.js";
 
 interface SpecWarning { code: string; message: string }
+interface BindingStatus {
+  capability: string; binding: string;
+  mode: "live" | "mock"; endpoint: string | null; reason: string | null;
+}
 interface LintResult {
   valid: boolean; journey?: string; version?: number;
   strategy?: StrategyKind;
@@ -55,6 +59,7 @@ export function JourneyEditor({ journey, journeys, flash, onPublished }: {
   const [error, setError] = useState<string | null>(null);
   /** The name being typed for a new journey, or null when not naming one. */
   const [newName, setNewName] = useState<string | null>(null);
+  const [bindings, setBindings] = useState<BindingStatus[] | null>(null);
   /** The YAML exactly as published, so an edit is distinguishable from a load. */
   const [pristine, setPristine] = useState("");
   /** Guards against a slow load landing after a newer selection. */
@@ -72,6 +77,13 @@ export function JourneyEditor({ journey, journeys, flash, onPublished }: {
     if (seq !== request.current) return;
     setYaml(body.yaml);
     setPristine(body.yaml);
+
+    // What this version's tools actually reach. Read per version, because the
+    // tools a version declares are part of that version.
+    const b = await fetch(
+      `/api/journeys/${encodeURIComponent(journey)}/bindings?version=${version}`);
+    if (seq !== request.current) return;
+    setBindings(b.ok ? ((await b.json()).bindings as BindingStatus[]) : null);
   };
 
   const refresh = async (): Promise<number[]> => {
@@ -346,14 +358,40 @@ export function JourneyEditor({ journey, journeys, flash, onPublished }: {
             </p>
           )}
 
-          {/* The `tools:` block is enforced but not yet connected. Say so where
-              someone is editing it, not only on the roadmap. */}
-          {yaml.includes("tools:") && (
-            <p className="muted provenance">
-              <span className="soon-tag">soon</span> Privileges under <code>tools:</code> are
-              enforced today — an unprivileged call is denied and logged — but the bindings
-              behind them are mocks. {item("bindings").will}
-            </p>
+          {/* Which destinations are real, read from the deployment rather than
+              asserted here. "The bindings are mocks" was true of every
+              deployment when it was written; now it is true of some. */}
+          {bindings !== null && bindings.length > 0 && (
+            <>
+              <h3 className="view-title">Destinations</h3>
+              <table>
+                <tbody>
+                  {bindings.map((b) => (
+                    <tr key={b.capability}>
+                      <td>
+                        <code>{b.capability}</code>
+                        <div className="muted provenance">{b.binding}</div>
+                      </td>
+                      <td className={b.mode === "live" ? "ok" : "muted"}>
+                        {b.mode === "live" ? b.endpoint : "mock"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="muted provenance">
+                Privileges are enforced either way — an unprivileged call is denied and
+                logged. {bindings.every((b) => b.mode === "mock")
+                  ? <>Every destination here is a mock. Set <code>
+                      {`BINDING_${bindings[0]!.binding.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_URL`}
+                    </code> and its <code>_TOKEN</code> to point one at a real system; the
+                    journey names the system, the deployment holds the credential, and the
+                    spec never sees it.</>
+                  : <>A live destination is reached for real, and the event records which —
+                    so a booking against a mock and a booking against a calendar are not the
+                    same row in the log.</>}
+              </p>
+            </>
           )}
         </aside>
       </div>

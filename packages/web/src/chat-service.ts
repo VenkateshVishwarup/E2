@@ -5,6 +5,7 @@ import type { JourneySpec } from "@midfunnel/core/journey/spec";
 import { isOpen, pinnedDefaults, renderPinned, requiredEvidenceFields } from "@midfunnel/core/journey/spec";
 import { AgentRegistry } from "@midfunnel/core/agent/registry";
 import { ToolBroker, mockBindings, type Binding } from "@midfunnel/runtime/broker";
+import { bindingsFor, describeBindings } from "@midfunnel/runtime/bindings";
 import type { EventInput, LeadState, StoredEvent } from "@midfunnel/core/events/types";
 import { evaluateAll } from "@midfunnel/core/metrics/predicate";
 import type { AgentRuntime } from "@midfunnel/runtime/step";
@@ -114,10 +115,11 @@ export class ChatService {
     private readonly fx: ModelCostConfig,
     private readonly offline: boolean,
     /**
-     * Bindings the agent may reach through the broker. Mocks today; the broker's
-     * privilege enforcement is not a mock, which is the half that matters.
+     * The mocks a capability falls back to when its binding is not configured.
+     * A configured binding reaches the real system; the privilege enforcement in
+     * front of both was never a mock, which is the half that matters.
      */
-    private readonly bindings: Record<string, Binding> = mockBindings,
+    private readonly mocks: Record<string, Binding> = mockBindings,
   ) {}
 
   async start(opts: StartSession): Promise<ChatReply> {
@@ -206,7 +208,14 @@ export class ChatService {
   ): Promise<void> {
     if (invocations.length === 0) return;
     const agents = AgentRegistry.fromSpec(spec);
-    const broker = new ToolBroker(agents, this.store, this.bindings);
+    // Resolved per journey, because the journey is what names the system: two
+    // journeys declaring different CRMs must not reach the same one.
+    const resolved = bindingsFor(spec, this.mocks);
+    const descriptors = Object.fromEntries(
+      describeBindings(spec, this.mocks).map((b) =>
+        [b.capability, { name: b.binding, live: b.mode === "live" }]),
+    );
+    const broker = new ToolBroker(agents, this.store, resolved, descriptors);
     const principal = agents.get(spec.agent.identity);
     const ctx = {
       leadId: base.leadId, journey: base.journey, journeyVersion: base.journeyVersion,

@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { isOpen, lintSpec, parseSpec } from "@midfunnel/core/journey/spec";
+import { mockBindings } from "@midfunnel/runtime/broker";
+import { describeBindings } from "@midfunnel/runtime/bindings";
 import { statusFor, type ServerDeps } from "../deps.js";
 
 /** A question long enough to be an essay is a paste, not a question. */
@@ -74,6 +76,32 @@ export function registerIntelligenceRoutes(app: FastifyInstance, deps: ServerDep
           journey: req.params.journey, version,
           yaml: await deps.registry.getSource(req.params.journey, version),
         };
+      } catch (err) {
+        return reply.code(statusFor(err)).send({ error: (err as Error).message });
+      }
+    },
+  );
+
+  /**
+   * What each of a journey's declared tools actually reaches.
+   *
+   * The privilege enforcement in front of a tool has always been real; the
+   * destinations behind it were mocks, and nothing said which. A demo that
+   * quietly implies a live CRM is worse than one that names the gap, so this is
+   * read straight from the deployment's configuration.
+   */
+  app.get<{ Params: { journey: string }; Querystring: { version?: string } }>(
+    "/api/journeys/:journey/bindings",
+    async (req, reply) => {
+      const version = req.query.version === undefined ? undefined : Number(req.query.version);
+      if (version !== undefined && !Number.isInteger(version)) {
+        return reply.code(400).send({ error: "version must be an integer" });
+      }
+      try {
+        const spec = version === undefined
+          ? await deps.registry.live(req.params.journey)
+          : await deps.registry.get(req.params.journey, version);
+        return { journey: spec.journey, version: spec.version, bindings: describeBindings(spec, mockBindings) };
       } catch (err) {
         return reply.code(statusFor(err)).send({ error: (err as Error).message });
       }

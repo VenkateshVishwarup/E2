@@ -6,8 +6,14 @@ services:
       POSTGRES_PASSWORD: midfunnel
       POSTGRES_DB: midfunnel_dev
     ports: ["5433:5432"]
+    # Creates midfunnel_test alongside midfunnel_dev. Runs once, when the data
+    # directory is first initialised — an existing volume already has it.
+    volumes:
+      - ./docker/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U midfunnel"]
+      # Name the database: `pg_isready -U midfunnel` defaults to a database of
+      # the same name, which does not exist, so every probe logged a FATAL.
+      test: ["CMD-SHELL", "pg_isready -U midfunnel -d midfunnel_dev"]
       interval: 2s
       timeout: 3s
       retries: 20

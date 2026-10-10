@@ -244,6 +244,49 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/journeys/{journey}/bindings:
+    get:
+      operationId: listJourneyBindings
+      tags: [Journeys]
+      summary: What each declared tool actually reaches
+      description: |
+        The privilege in front of a tool has always been enforced for real — an
+        unprivileged call is denied and recorded as `AuthorizationDenied`. What stood
+        behind it was a mock, and nothing said so.
+
+        A journey declares a name (`binding: hubspot`); the deployment supplies the
+        endpoint and the credential as `BINDING_HUBSPOT_URL` and `BINDING_HUBSPOT_TOKEN`.
+        A credential in a spec is a credential in version control, in a diff, and on
+        screen — so the spec holds the name and never the secret, and this endpoint
+        reports the resolution without ever returning a token or a full URL.
+
+        Omit `version` for the live one.
+      parameters:
+        - $ref: "#/components/parameters/JourneyName"
+        - name: version
+          in: query
+          required: false
+          description: A published version. Defaults to the live one.
+          schema:
+            type: integer
+            minimum: 1
+            example: 5
+      responses:
+        "200":
+          description: One row per tool the journey declares.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BindingList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/journeys/{journey}/promote:
     post:
       operationId: promoteJourneyVersion
@@ -1498,6 +1541,73 @@ components:
           example: Which programme are you considering?
         state:
           $ref: "#/components/schemas/ChatState"
+
+    BindingStatus:
+      type: object
+      description: |
+        One declared tool, and the destination it resolves to in this deployment.
+      required: [capability, binding, mode, endpoint, reason]
+      additionalProperties: false
+      properties:
+        capability:
+          type: string
+          description: The capability the journey's agent holds a privilege for.
+          example: crm.upsert_lead
+        binding:
+          type: string
+          description: The system the journey named. Resolution goes through this, not
+            through the capability, so two journeys naming different CRMs reach different
+            ones.
+          example: hubspot
+        mode:
+          type: string
+          enum: [live, mock]
+          description: |
+            `live` means a call leaves this process and something outside it happens.
+            `mock` means a deterministic stand-in answered.
+          example: live
+        endpoint:
+          type: string
+          nullable: true
+          description: Host only, never the path, the query or the token. Null for a mock.
+          example: crm.example.com
+        reason:
+          type: string
+          nullable: true
+          description: Why it is a mock, naming the variable that would make it live.
+            Null when it is live.
+          example: BINDING_HUBSPOT_URL is not set
+      example:
+        capability: crm.upsert_lead
+        binding: hubspot
+        mode: live
+        endpoint: crm.example.com
+        reason: null
+
+    BindingList:
+      type: object
+      required: [journey, version, bindings]
+      additionalProperties: false
+      properties:
+        journey:
+          type: string
+          example: mba-admissions-qualification
+        version:
+          type: integer
+          minimum: 1
+          example: 5
+        bindings:
+          type: array
+          items:
+            $ref: "#/components/schemas/BindingStatus"
+      example:
+        journey: mba-admissions-qualification
+        version: 5
+        bindings:
+          - { capability: crm.upsert_lead, binding: hubspot, mode: live,
+              endpoint: crm.example.com, reason: null }
+          - { capability: calendar.book_slot, binding: calendly, mode: mock,
+              endpoint: null, reason: BINDING_CALENDLY_URL is not set }
 
     LiveVersion:
       type: object

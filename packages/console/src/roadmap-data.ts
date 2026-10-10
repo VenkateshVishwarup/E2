@@ -29,12 +29,17 @@ export const ROADMAP: RoadmapItem[] = [
   },
   {
     id: "bindings",
-    title: "Real integrations",
-    will: "Book into a live calendar and write to a live CRM, with credentials held in a " +
-          "vault and referenced — never stored — by the journey.",
-    today: "The Tool Broker is real and privileges are enforced, not merely declared: an " +
-           "unprivileged call is denied and logged as an event. The bindings behind it are " +
-           "mocks, so the enforcement is genuine and the destinations are not.",
+    title: "Vault-held credentials, and the rest of the vendors",
+    will: "Hold integration credentials in a secrets manager rather than environment " +
+          "variables, rotate them without a redeploy, and ship adapters that speak each " +
+          "vendor's own API rather than one generic webhook shape.",
+    today: "A journey names the system it reaches (`binding: hubspot`) and the deployment " +
+           "supplies the endpoint and credential, so a secret is never in a spec, a diff " +
+           "or on screen. A configured binding makes a real call with a deadline, and the " +
+           "event records which system and whether the call was live — a booking against a " +
+           "mock and a booking against a calendar are not the same row. Unconfigured " +
+           "bindings fall back to mocks and the Journey screen names the variable that " +
+           "would make each one real.",
     horizon: "next",
   },
   {

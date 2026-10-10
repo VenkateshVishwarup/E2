@@ -7,7 +7,9 @@ import { migrate } from "@midfunnel/core/db/migrate";
 import { EventStore } from "@midfunnel/core/events/store";
 import { parseSpec } from "@midfunnel/core/journey/spec";
 import { AgentRegistry } from "@midfunnel/core/agent/registry";
+import { createServer, type Server } from "node:http";
 import { ToolBroker, mockBindings } from "../src/broker.js";
+import { bindingsFor, describeBindings } from "../src/bindings.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const spec = parseSpec(readFileSync(join(HERE, "../../core/test/fixtures/mba-v4.yaml"), "utf8"));
@@ -80,5 +82,87 @@ describe("ToolBroker", () => {
     const [e] = await store.query({ leadId: "L1", type: "ToolInvoked" });
     expect(JSON.stringify(e!.payload)).not.toContain("secret@person.com");
     expect(e!.payload).toHaveProperty("argsHash");
+  });
+});
+
+describe("ToolBroker — reaching a real system", () => {
+  let server: Server;
+  let origin: string;
+  let received: unknown[] = [];
+  let status = 200;
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c as Buffer));
+      req.on("end", () => {
+        received.push(JSON.parse(Buffer.concat(chunks).toString() || "null"));
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify({ bookingId: "bk_real_9" }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  });
+  afterAll(async () => { await new Promise<void>((r) => server.close(() => r())); });
+  beforeEach(() => { received = []; status = 200; });
+
+  /** The broker as ChatService builds it: resolved per journey, described per journey. */
+  const brokerWith = (env: NodeJS.ProcessEnv) => new ToolBroker(
+    registry, store, bindingsFor(spec, mockBindings, env),
+    Object.fromEntries(describeBindings(spec, mockBindings, env)
+      .map((b) => [b.capability, { name: b.binding, live: b.mode === "live" }])),
+  );
+
+  const lastTool = async () =>
+    (await store.query({ leadId: "L1", type: "ToolInvoked" })).at(-1)!;
+
+  it("calls the configured endpoint and returns what it said", async () => {
+    const r = await brokerWith({ BINDING_CALENDLY_URL: `${origin}/book` })
+      .invoke(ctx, principal, "calendar.book_slot", { slot: "2026-10-20T10:00:00Z" });
+    expect(r).toEqual({ ok: true, value: { bookingId: "bk_real_9" } });
+    expect(received).toEqual([{
+      capability: "calendar.book_slot", scope: "counsellor_pool_mba",
+      args: { slot: "2026-10-20T10:00:00Z" },
+    }]);
+  });
+
+  it("records the journey's own binding name, and that the call was real", async () => {
+    // "booked a slot" and "booked a slot against a mock" are different facts.
+    await brokerWith({ BINDING_CALENDLY_URL: `${origin}/book` })
+      .invoke(ctx, principal, "calendar.book_slot", {});
+    expect((await lastTool()).payload).toMatchObject({
+      capability: "calendar.book_slot", binding: "calendly", live: true, resultStatus: "ok",
+    });
+  });
+
+  it("marks an unconfigured capability as not live, and never leaves the process", async () => {
+    await brokerWith({}).invoke(ctx, principal, "calendar.book_slot", {});
+    expect(received).toEqual([]);
+    expect((await lastTool()).payload).toMatchObject({ binding: "calendly", live: false });
+  });
+
+  it("records a failing integration rather than throwing it at the conversation", async () => {
+    status = 500;
+    const r = await brokerWith({ BINDING_CALENDLY_URL: `${origin}/book` })
+      .invoke(ctx, principal, "calendar.book_slot", {});
+    expect(r.ok).toBe(false);
+    expect((await lastTool()).payload).toMatchObject({
+      resultStatus: "error", live: true, binding: "calendly",
+    });
+  });
+
+  it("still refuses an unprivileged capability before any call is made", async () => {
+    const r = await brokerWith({ BINDING_CALENDLY_URL: `${origin}/book` })
+      .invoke(ctx, principal, "payment.charge_card", {});
+    expect(r.ok).toBe(false);
+    expect(received).toEqual([]);
+    expect(await store.query({ leadId: "L1", type: "AuthorizationDenied" })).toHaveLength(1);
+  });
+
+  it("keeps the arguments out of the log, configured or not", async () => {
+    await brokerWith({ BINDING_CALENDLY_URL: `${origin}/book` })
+      .invoke(ctx, principal, "calendar.book_slot", { email: "priya@example.com" });
+    expect(JSON.stringify((await lastTool()).payload)).not.toContain("priya@example.com");
   });
 });
